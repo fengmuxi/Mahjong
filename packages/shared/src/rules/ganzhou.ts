@@ -78,7 +78,7 @@ export const ganzhouRules: RuleSet = {
   },
 
   // 翻精 = 开；杠后掷骰定位补牌（牌友确认口径，见 GZ_CONFIG.gangDice——覆盖文档 §8.3 的牌尾补牌）；
-  // 过水默认关（规则文档未提及）
+  // 过水默认关（规则文档未提及）；首局四家掷骰比大小坐庄
   flow: {
     dealCeremony: true,
     flipWild: true,
@@ -86,5 +86,6 @@ export const ganzhouRules: RuleSet = {
     turnOrder: 'ccw',
     skipRon: false,
     declaredKong: true,
+    firstDealerRoll: true,
   },
 };

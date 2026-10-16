@@ -56,5 +56,6 @@ export const nanchangRules: RuleSet = {
     settle: computeSettlement,
   },
 
-  flow: { dealCeremony: true, flipWild: true, gangDice: true, turnOrder: 'ccw' },
+  // 南昌：默认东起庄，无需首局掷骰定庄
+  flow: { dealCeremony: true, flipWild: true, gangDice: true, turnOrder: 'ccw', firstDealerRoll: false },
 };

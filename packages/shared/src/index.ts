@@ -127,6 +127,23 @@ export interface GzJingView {
   revealed: boolean;
 }
 
+/** 对局操作类型（日志用） */
+export type GameActionKind = 'discard' | 'chi' | 'peng' | 'gang' | 'angang' | 'bugang' | 'hu' | 'draw';
+
+/** 一条对局操作记录 */
+export interface GameActionLog {
+  /** 递增序号 */
+  seq: number;
+  /** 操作类型 */
+  kind: GameActionKind;
+  /** 执行者座位 */
+  seat: number;
+  /** 涉及的牌（吃/碰/杠为整组，出牌/胡为那张牌） */
+  tiles: Tile[];
+  /** 额外说明（如胡牌来源、牌型名） */
+  note?: string;
+}
+
 /** 每个座位看到的个性化对局视图 */
 export interface GameView {
   code: string;
@@ -202,6 +219,10 @@ export interface GameView {
   winner: number | null;
   /** phase=over 时的结果文案 */
   result: string | null;
+  /** 本局操作记录（出牌 / 吃 / 碰 / 杠 / 胡 / 流局） */
+  log: GameActionLog[];
+  /** 最近一次操作（用于客户端播放动画） */
+  lastAction: GameActionLog | null;
 }
 
 /** 首局定庄的一次掷骰记录（两骰点数 + 和值） */
@@ -250,19 +271,39 @@ export type ClientMsg =
   /** 托管开关：开启后服务端代你掷骰 / 应答 / 出牌，可随时取消 */
   | { t: 'setAuto'; auto: boolean };
 
+/** 赣州冲关 · 单组精分（§5.2 新口径：12 张精两两配对为 6 组，逐组独立冲关） */
+export interface GzJingComboRow {
+  /** 正精牌面 */
+  zheng: Tile;
+  /** 副精牌面 */
+  fu: Tile;
+  /** 该组合在 6 组中的出现次数（相同组合重复累加） */
+  count: number;
+  /** 组合累计精分 = 正精计入张数 ×2 + 副精计入张数 ×1（同牌面跨组只计一次） */
+  accum: number;
+  /** 冲关倍数（按 accum 查 §5.3） */
+  chongguan: number;
+  /** 精霸（§5.4 按组）：该组正副精仅此一家持有 → 本组得分 ×2 */
+  jingba: boolean;
+  /** 本组得分 = accum × 冲关 × 精霸 × count */
+  score: number;
+}
+
 /** 赣州冲关 · 结算逐家明细（§7：精分 + 胡牌分 + 杠分） */
 export interface GzSettleRow {
   seat: number;
   /** 正精 / 副精张数（按精位计，一牌双精算 2 张） */
   pi: number;
   fu: number;
-  /** 精分原始值（未冲关） */
+  /** 精分原始值 = Σ 组合累计 × 组数（未冲关 / 未精霸） */
   jingRaw: number;
-  /** 冲关倍数（§5.3） */
+  /** 冲关倍数（该家各组中的最大倍数，明细见 jingCombos） */
   chongguan: number;
-  /** 精霸：一整套正副精独占 → 全部精分 ×2（§5.4） */
+  /** 精霸：任一组合正副精独占 → 该组 ×2（§5.4） */
   jingba: boolean;
-  /** 精分终值 = 原始 × 冲关 × 精霸 */
+  /** 单组精分明细（§5.2 新口径） */
+  jingCombos: GzJingComboRow[];
+  /** 精分终值 = Σ 各组得分 */
   jingFinal: number;
   /** 胡牌分（未胡为 0） */
   pattern: number;

@@ -136,22 +136,24 @@ export interface ScoreRules {
   settleGz?(input: GzSettleInput): GzSettleOutcome;
 }
 
-/** 流程 / 仪式配置 */
-export interface FlowConfig {
-  /** 开局掷骰定起牌位 */
-  dealCeremony: boolean;
-  /** 翻精掷骰（赖子为 flipped 时通常开） */
-  flipWild: boolean;
-  /** 杠后掷骰补牌 */
-  gangDice: boolean;
-  /** 行牌方向 */
-  turnOrder: 'ccw' | 'cw';
-  /** 过水：过胡（含超时未应）后到自己摸牌前不能再点炮胡；缺省 true（南昌），赣州关 */
-  skipRon?: boolean;
-  /** 报杠（展示三张）：手有三张同牌可展示，冻结这三张并强制他家打出第 4 张（规则 §8.5）；
-   *  缺省 false（南昌），仅赣州开 */
-  declaredKong?: boolean;
-}
+  /** 流程 / 仪式配置 */
+  export interface FlowConfig {
+    /** 开局掷骰定起牌位 */
+    dealCeremony: boolean;
+    /** 翻精掷骰（赖子为 flipped 时通常开） */
+    flipWild: boolean;
+    /** 杠后掷骰补牌 */
+    gangDice: boolean;
+    /** 行牌方向 */
+    turnOrder: 'ccw' | 'cw';
+    /** 过水：过胡（含超时未应）后到自己摸牌前不能再点炮胡；缺省 true（南昌），赣州关 */
+    skipRon?: boolean;
+    /** 报杠（展示三张）：手有三张同牌可展示，冻结这三张并强制他家打出第 4 张（规则 §8.5）；
+     *  缺省 false（南昌），仅赣州开 */
+    declaredKong?: boolean;
+    /** 首局是否需要掷骰定庄：缺省 false（南昌，默认东起庄），仅赣州开（四家掷骰比大小坐庄） */
+    firstDealerRoll?: boolean;
+  }
 
 /** 玩法契约：引擎只依赖这些能力，不关心具体玩法 */
 export interface RuleSet {

@@ -14,14 +14,16 @@
  * | ② 隐藏正精 | 5 | 正精墩下张 + 前邻墩上下 + 后邻墩上下 | **全程扣放** | ❌（明文禁止，即使摸到） | 2 分/张 |
  * | ③ 副精 | 6 | 每张正精的**下一张序数牌**（按牌面推，不按牌墙位置） | 仅对应明面正精那 1 张公开 | ❌ | 1 分/张 |
  *
- * 精牌构成（§3.5）：6 张正精（2 分/张）+ 6 张副精（1 分/张）= 12 个「精位」。
- * 精位按**牌面**指向，同一牌面可被多个精位同时指向（重叠），每张独立计分叠加（§5.2）。
+ * 精牌构成（§3.5/§3.4）：6 张正精（2 分/张）+ 6 张副精（1 分/张）= 12 个「精位」，
+ * 一一配对成 6 组「正精 + 副精」。
+ * 精分（§5.2 新口径）：**每组按冲关规则独立计算**，相同组合的多组分数重复累加；
+ * 一张物理牌只计一次、优先顶正精位（详见 `gzJingSeatScores`）。
  * 精分归属（确认口径）：**手牌 + 副露 + 牌河**都算——打出无人碰的精仍归打出者。
  */
 
-import type { Tile } from './index.ts';
+import type { GzJingComboRow, Tile } from './index.ts';
 import { GZ_CONFIG } from './rules/gzconfig.ts';
-import { nextJing } from './tiles.ts';
+import { nextJing, tileCounts } from './tiles.ts';
 
 /** 精牌三分类（§3.6） */
 export type GzJingKind =
@@ -192,77 +194,148 @@ export function gzWildcardTiles(_j: GzJing): Tile[] {
 }
 
 /**
- * 下发给客户端的精牌牌面（去重）。
- * @param all true = 结算揭晓，12 张全开；false = 对局中，只给「明面正精 + 它对应的副精」2 张
+ * 下发给客户端的精牌牌面。
+ * @param all true = 结算揭晓，**6 张正精 + 6 张副精全开且不去重**（同牌面重复出现即多张）；
+ *            false = 对局中，只给「明面正精 + 它对应的副精」2 张
  */
 export function gzJingPublicTiles(j: GzJing, all: boolean): { zheng: Tile[]; fu: Tile[] } {
-  if (all) return { zheng: [...new Set(j.zheng)], fu: [...new Set(j.fu)] };
+  if (all) return { zheng: [...j.zheng], fu: [...j.fu] };
   return {
     zheng: j.zheng[0] === undefined ? [] : [j.zheng[0]],
     fu: j.fu[0] === undefined ? [] : [j.fu[0]],
   };
 }
 
-/** 冲关倍数（§5.3）：精分 ≥ 5 触发；表外档位（>12 子）按「精分 − 3」递推 */
+/** 冲关倍数（§5.3）：组合累计精分 ≥ 5 触发；表外档位（>12 子）按「精分 − 3」递推 */
 export function gzChongguanMult(points: number): number {
   const t = GZ_CONFIG.chongguan[points];
   if (t !== undefined) return t;
   return points >= 5 ? points - 3 : 1;
 }
 
-/** 各家精牌持有统计 */
-export interface GzJingHolding {
-  /** 正精张数 / 副精张数（按精位计：一牌双精算 2 张，展示用） */
-  pi: number;
-  fu: number;
-  /** 精分原始值（未冲关 / 未精霸） */
-  raw: number;
+/** 一组「正精 + 副精」配对（§5.2）：相同组合合并为一项，`count` 为在 6 组中的出现次数 */
+export interface GzJingCombo {
+  zheng: Tile;
+  fu: Tile;
+  count: number;
+}
+
+/** 6 组配对：正精 `zheng[i]` 配副精 `fu[i]`（§3.4），相同组合合并计数（§5.2 重复累加） */
+export function gzJingCombos(j: GzJing): GzJingCombo[] {
+  const out: GzJingCombo[] = [];
+  const at = new Map<string, number>();
+  for (let i = 0; i < j.zheng.length; i++) {
+    const z = j.zheng[i];
+    const f = j.fu[i];
+    if (z === undefined || f === undefined) continue;
+    const key = `${z}:${f}`;
+    const k = at.get(key);
+    if (k === undefined) {
+      at.set(key, out.length);
+      out.push({ zheng: z, fu: f, count: 1 });
+    } else out[k].count++;
+  }
+  return out;
+}
+
+/** 每张牌面在 6 组中的精位次数（正精位 / 副精位） */
+function gzJingSlotCounts(j: GzJing): { zheng: number[]; fu: number[] } {
+  const zheng = new Array(34).fill(0);
+  const fu = new Array(34).fill(0);
+  for (const t of j.zheng) if (t !== undefined) zheng[t]++;
+  for (const t of j.fu) if (t !== undefined) fu[t]++;
+  return { zheng, fu };
 }
 
 /**
- * 统计各家持有的精牌（确认口径：手牌 + 副露 + 牌河——打出无人碰的精仍归打出者；
- * 调用方传入的 holdings 即已含牌河，全包牌由 gzscore 先行剔除）。
- * 三类精牌都计分：明面 / 隐藏正精 2 分，副精 1 分（§3.6）。
+ * 某家在各牌面**计入精分**的正 / 副精张数：**每张物理牌只计一次**，且优先顶正精位。
+ * 例：手上 2 张 1 万 —— 1 张顶「1万+2万」组的正精，另 1 张顶「9万+1万」组的副精。
+ */
+function gzJingUsed(counts: number[], slots: { zheng: number[]; fu: number[] }): { zheng: number[]; fu: number[] } {
+  const zheng = new Array(34).fill(0);
+  const fu = new Array(34).fill(0);
+  for (let k = 0; k < 34; k++) {
+    zheng[k] = Math.min(counts[k], slots.zheng[k]);
+    fu[k] = Math.min(counts[k] - zheng[k], slots.fu[k]);
+  }
+  return { zheng, fu };
+}
+
+/** 某家精分明细（§5.2 新口径：逐组配对 → 逐组冲关 → 相同组合重复累加） */
+export interface GzJingSeatScore {
+  combos: GzJingComboRow[];
+  /** 精分原始值 = Σ 组合累计 × 组数（未冲关 / 未精霸） */
+  raw: number;
+  /** 精分终值 = Σ 各组得分 */
+  final: number;
+}
+
+/**
+ * 精分（§5.2 新口径）：12 张精两两配对为 6 组（正精 + 副精），**每组按冲关规则独立计算**，
+ * 相同组合的多组**分数重复累加**；某组正副精仅一家持有时该组得分 ×2（精霸，§5.4）。
+ *
+ * 组合累计精分 = 正精计入张数 × 2 + 副精计入张数 × 1，每张物理牌只计一次、优先顶正精位。
+ *
+ * @param scoreHoldings 交叉账用持有（全包牌已剔除）
+ * @param physHoldings  物理持有（精霸判定用，含全包牌与牌河）
+ */
+export function gzJingSeatScores(
+  scoreHoldings: Tile[][],
+  physHoldings: Tile[][],
+  j: GzJing,
+): GzJingSeatScore[] {
+  const slots = gzJingSlotCounts(j);
+  const combos = gzJingCombos(j);
+  const physCounts = physHoldings.map((h) => tileCounts(h));
+  return scoreHoldings.map((tiles, seat) => {
+    const used = gzJingUsed(tileCounts(tiles), slots);
+    const out: GzJingComboRow[] = [];
+    let raw = 0;
+    let final = 0;
+    for (const c of combos) {
+      const accum = GZ_CONFIG.zhengPoints * used.zheng[c.zheng] + GZ_CONFIG.fuPoints * used.fu[c.fu];
+      const chongguan = gzChongguanMult(accum);
+      // 精霸（§5.4 按组）：该组正副精仅此一家持有，且这家两张都有
+      let owners = 0;
+      let owner = -1;
+      for (let s = 0; s < physCounts.length; s++) {
+        if (physCounts[s][c.zheng] > 0 || physCounts[s][c.fu] > 0) {
+          owners++;
+          owner = s;
+        }
+      }
+      const jingba = owners === 1 && owner === seat && physCounts[seat][c.zheng] > 0 && physCounts[seat][c.fu] > 0;
+      const score = accum * chongguan * (jingba ? GZ_CONFIG.jingbaMult : 1) * c.count;
+      raw += accum * c.count;
+      final += score;
+      out.push({ zheng: c.zheng, fu: c.fu, count: c.count, accum, chongguan, jingba, score });
+    }
+    return { combos: out, raw, final };
+  });
+}
+
+/** 各家精牌持有张数（展示用：按精位计，一牌双精算 2 张） */
+export interface GzJingHolding {
+  pi: number;
+  fu: number;
+}
+
+/**
+ * 统计各家持有的精牌张数（确认口径：手牌 + 副露 + 牌河——打出无人碰的精仍归打出者）。
+ * 仅用于结算面板展示；精分本身走 `gzJingSeatScores`（§5.2 新口径）。
  */
 export function gzJingHoldings(holdings: Tile[][], j: GzJing): GzJingHolding[] {
   const slots = gzJingSlots(j);
   return holdings.map((tiles) => {
     let pi = 0;
     let fu = 0;
-    let raw = 0;
     for (const t of tiles) {
       for (const s of slots) {
         if (s.tile !== t) continue;
-        raw += s.points;
         if (s.group === 'zheng') pi++;
         else fu++;
       }
     }
-    return { pi, fu, raw };
+    return { pi, fu };
   });
-}
-
-/**
- * 精霸（§5.4 + 确认口径）：**一整套正副精只有你手上有**才触发——
- * 某张正精与它对应的副精（`fu[i] = 正精 zheng[i] 的下一张序数牌`）组成「一套」，
- * 你同时持有这套的正精和副精、且其余三家连其中任何一张都没有 → 你的全部精分 ×2。
- * 精霸对全部精分生效（含叠加分与冲关翻倍后的精分，§5.4）。
- */
-export function gzJingba(holdings: Tile[][], j: GzJing): boolean[] {
-  const seats = holdings.map(() => false);
-  for (let i = 0; i < j.zheng.length; i++) {
-    const z = j.zheng[i];
-    const f = j.fu[i];
-    if (z === undefined || f === undefined) continue;
-    const owners: number[] = [];
-    for (let seat = 0; seat < holdings.length; seat++) {
-      if (holdings[seat].includes(z) || holdings[seat].includes(f)) owners.push(seat);
-    }
-    // 只有一家碰过这套正副精，且这家两张都有 → 该家精霸
-    if (owners.length === 1) {
-      const me = holdings[owners[0]];
-      if (me.includes(z) && me.includes(f)) seats[owners[0]] = true;
-    }
-  }
-  return seats;
 }

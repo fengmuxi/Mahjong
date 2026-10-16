@@ -29,8 +29,9 @@ export const GZ_PATTERN_BASE = {
 } as const;
 
 /** 乱风字牌成组方式（§四）：
- *  'any3'        = 任意 3 张不重复字牌成组（规则文档字面：东+南+西、东+中+发 均算）
- *  'windsDragons' = 三张不同风为一组、中发白为一组（南昌口径，备用） */
+ *  'windsDragons' = **风、箭各自成组**：东南西北任意 3 张不同风为一组、中发白任意 3 张不同箭为一组，
+ *                   风箭不可混（如 东+南 可吃 西，但不能吃 中）——赣州口径
+ *  'any3'         = 任意 3 张不重复字牌成组（风箭可混，备用） */
 export type GzHonorGroupMode = 'any3' | 'windsDragons';
 
 export const GZ_CONFIG = {
@@ -67,6 +68,6 @@ export const GZ_CONFIG = {
   chaozhuangScore: 10,
   /** 过水（过胡后到自己摸牌前不能点炮胡）：规则文档未提及，默认关 */
   skipRon: false,
-  /** 乱风字牌成组方式（§四） */
-  honorGroup: 'any3' as GzHonorGroupMode,
+  /** 乱风字牌成组方式（§四）：风、箭各自成组、风箭不混 */
+  honorGroup: 'windsDragons' as GzHonorGroupMode,
 } as const;

@@ -122,6 +122,9 @@ export class Table {
   private bubbles: { seat: number; content: string; kind: 'text' | 'emote'; t0: number }[] = [];
   /** 互动表情动画：从发送者铭牌飞向目标铭牌，在目标处溅射并淡出 */
   private emoteFx: { from: number; target: number; icon: string; t0: number }[] = [];
+  /** 吃碰胡杠中心动画 */
+  private actionFx: { kind: string; seat: number; t0: number } | null = null;
+  private lastActionSeq = 0;
 
   constructor(private canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext('2d');
@@ -160,6 +163,15 @@ export class Table {
     if (view.drawn !== null && this.anim) this.anim = null; // 新一轮摸牌则取消旧动画
     if (view.ceremony?.state !== 'wait-roll') this.rollClicked = false;
     this.rollBtn = null;
+
+    // 检测新操作 → 触发中心动画
+    if (view.lastAction && view.lastAction.seq !== this.lastActionSeq) {
+      this.lastActionSeq = view.lastAction.seq;
+      const k = view.lastAction.kind;
+      if (k === 'chi' || k === 'peng' || k === 'gang' || k === 'angang' || k === 'bugang' || k === 'hu') {
+        this.actionFx = { kind: k, seat: view.lastAction.seat, t0: performance.now() };
+      }
+    }
 
     // 发牌仪式：手牌与牌墙按步骤渐进（动画结束前不露出最终手牌）
     const deal = this.dealProgress(view);
@@ -212,8 +224,14 @@ export class Table {
     // 互动表情动画与铭牌气泡画在最上层（它们都待在四角空档里，不会压住牌面）
     this.drawEmoteFx();
     this.drawBubbles();
-    // 光标呼吸 / 表情动画 / 气泡淡出都需要连续帧，任一存在就继续排帧
-    if (view.phase === 'playing' || this.emoteFx.length > 0 || this.bubbles.length > 0) {
+    this.drawActionFx();
+    // 光标呼吸 / 表情动画 / 气泡淡出 / 操作动画都需要连续帧，任一存在就继续排帧
+    if (
+      view.phase === 'playing' ||
+      this.emoteFx.length > 0 ||
+      this.bubbles.length > 0 ||
+      this.actionFx !== null
+    ) {
       this.scheduleFrame();
     }
   }
@@ -1069,6 +1087,56 @@ export class Table {
       lines.forEach((l, i) => ctx.fillText(l, x + 9, y + 6 + BUBBLE_LINE_H * i + BUBBLE_LINE_H / 2));
       ctx.globalAlpha = 1;
     }
+  }
+
+  /** 吃碰胡杠中心动画：牌桌中央大字弹出 + 淡入淡出 */
+  private drawActionFx(): void {
+    const fx = this.actionFx;
+    if (!fx) return;
+    const now = performance.now();
+    const age = now - fx.t0;
+    const DUR = 1200;
+    if (age >= DUR) {
+      this.actionFx = null;
+      return;
+    }
+    const ctx = this.ctx;
+    const t = age / DUR;
+    // 透明度：前 15% 淡入，后 25% 淡出
+    const alpha = t < 0.15 ? t / 0.15 : t > 0.75 ? 1 - (t - 0.75) / 0.25 : 1;
+    // 缩放：前 20% 从 0.5 弹到 1.15，之后缓降到 1.0
+    const scale = t < 0.2 ? 0.5 + 0.65 * (t / 0.2) : 1.15 - 0.15 * ((t - 0.2) / 0.8);
+    // 文字与配色
+    const conf: Record<string, { label: string; color: string; bg: string }> = {
+      chi: { label: '吃', color: '#81c784', bg: 'rgba(76,175,80,0.25)' },
+      peng: { label: '碰', color: '#64b5f6', bg: 'rgba(33,150,243,0.25)' },
+      gang: { label: '杠', color: '#ffb74d', bg: 'rgba(255,152,0,0.25)' },
+      angang: { label: '暗杠', color: '#ffb74d', bg: 'rgba(255,152,0,0.25)' },
+      bugang: { label: '补杠', color: '#ffb74d', bg: 'rgba(255,152,0,0.25)' },
+      hu: { label: '胡', color: '#ef9a9a', bg: 'rgba(229,72,77,0.3)' },
+    };
+    const c = conf[fx.kind] ?? { label: fx.kind, color: '#fff', bg: 'rgba(0,0,0,0.3)' };
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(640, 300);
+    ctx.scale(scale, scale);
+    // 背景圆角矩形
+    const w = 120;
+    const h = 70;
+    roundRect(ctx, -w / 2, -h / 2, w, h, 14);
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fill();
+    ctx.strokeStyle = c.color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // 文字
+    ctx.fillStyle = c.color;
+    ctx.font = 'bold 42px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(c.label, 0, 2);
+    ctx.restore();
+    ctx.globalAlpha = 1;
   }
 
   /** 互动表情动画：飞行段 → 命中溅射 + 目标铭牌闪边 */

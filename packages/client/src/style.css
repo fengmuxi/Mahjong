@@ -54,6 +54,7 @@ body[data-bg='plain'] {
 }
 
 .app {
+  position: relative; /* .dice-overlay 的定位基准：局内/大厅共用覆盖层 */
   max-width: 1180px;
   margin: 0 auto;
   padding: 14px 20px;
@@ -441,7 +442,7 @@ button.danger:hover {
   color: var(--gold);
 }
 
-/* ---------- 第 2 步：创建 / 加入 二选一 ---------- */
+/* ---------- 第 1 步：玩法选择卡片 ---------- *//* ---------- 第 2 步：创建 / 加入 二选一 ---------- */
 .mode-cards {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -496,7 +497,7 @@ button.danger:hover {
   color: var(--dim);
 }
 
-/* ---------- 第 3 步：填写信息 ---------- */
+/* ---------- 第 2 步：创建 / 加入 二选一 ---------- *//* ---------- 第 3 步：填写信息 ---------- */
 .form-summary {
   display: flex;
   flex-wrap: wrap;
@@ -753,6 +754,15 @@ button.danger:hover {
   color: var(--dim);
 }
 
+/* 未定庄前：写在昵称旁的定庄掷骰结果（金色） */
+.seat-dr {
+  color: var(--gold);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .seat-state {
   font-size: 12px;
   color: var(--dim);
@@ -823,63 +833,9 @@ button.danger:hover {
   color: var(--dim);
 }
 
-/* ---------- 首局定庄掷骰 ---------- */
-
-.dealer-roll {
-  margin: 0 0 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(0, 0, 0, 0.16);
-}
-.dealer-roll[hidden] {
-  display: none;
-}
-.dr-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-.dr-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--gold);
-  letter-spacing: 1px;
-}
-.dr-hint {
-  font-size: 12px;
-  color: var(--dim);
-}
-.dr-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 12px;
-  margin-bottom: 10px;
-}
-.dr-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--dim);
-  min-width: 0;
-}
-.dr-row.self {
-  color: var(--ink);
-}
-.dr-row.done .dr-val {
-  color: var(--gold);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.dr-who {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* ---------- 首局定庄掷骰 ----------
+   UI：打骰子按钮在大厅操作行（#dr-btn，与「准备」并排）；
+   动画复用局内 .dice-overlay；点数结果在座位卡 .seat-dr 金色标注。 */
 
 .swap-text {
   margin: 0;
@@ -918,9 +874,41 @@ button.danger:hover {
   display: flex;
   gap: 24px;
   align-items: center;
+  justify-content: space-between;
   margin-bottom: 8px;
   font-size: 14px;
   color: var(--dim);
+}
+
+.hud-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.hud-label {
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.hud-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 10px;
+  background: rgba(230, 193, 75, 0.15);
+  color: var(--gold);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.hud-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--line);
+  flex: none;
 }
 
 .code.small {
@@ -931,6 +919,7 @@ button.danger:hover {
 
 .hud-item {
   color: var(--ink);
+  white-space: nowrap;
 }
 
 #table {
@@ -1259,10 +1248,99 @@ button.danger:hover {
 }
 /* 收起态：仅留标题栏 */
 .chat.collapsed .chat-log,
+.chat.collapsed .log-list,
 .chat.collapsed .chat-pop,
 .chat.collapsed .chat-input-row {
   display: none;
 }
+
+/* ---------- 聊天 / 记录 标签页 ---------- */
+.chat-tabs {
+  display: flex;
+  gap: 2px;
+}
+.chat-tab {
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 13px;
+  padding: 2px 8px;
+  cursor: pointer;
+  border-radius: 6px;
+  line-height: 1.4;
+}
+.chat-tab:hover {
+  color: var(--ink);
+}
+.chat-tab.active {
+  color: var(--gold);
+  background: rgba(255, 255, 255, 0.08);
+  font-weight: 600;
+}
+/* 日志列表：默认隐藏，切到「记录」标签才显示 */
+.log-list {
+  display: none;
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 38vh;
+  overflow-y: auto;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  scrollbar-width: thin;
+}
+.chat.show-log .log-list {
+  display: flex;
+}
+/* 收起态优先级必须高于 .show-log，否则收起后日志列表仍然显示 */
+.chat.collapsed .log-list {
+  display: none;
+}
+.chat.show-log .chat-log,
+.chat.show-log .chat-pop,
+.chat.show-log .chat-input-row {
+  display: none;
+}
+.log-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  word-break: break-word;
+}
+.log-list .log-seat {
+  flex: none;
+  color: var(--gold);
+  font-weight: 600;
+  font-size: 11px;
+  min-width: 28px;
+}
+.log-list .log-action {
+  flex: none;
+  min-width: 32px;
+  text-align: center;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.log-list .log-tiles {
+  color: var(--ink);
+}
+.log-list .log-note {
+  color: var(--dim);
+  font-size: 11px;
+}
+/* 操作类型配色 */
+.log-action.discard { background: rgba(255,255,255,0.08); color: var(--dim); }
+.log-action.chi { background: rgba(76,175,80,0.2); color: #81c784; }
+.log-action.peng { background: rgba(33,150,243,0.2); color: #64b5f6; }
+.log-action.gang,
+.log-action.angang,
+.log-action.bugang { background: rgba(255,152,0,0.2); color: #ffb74d; }
+.log-action.hu { background: rgba(229,72,77,0.2); color: #ef9a9a; }
+.log-action.draw { background: rgba(158,158,158,0.2); color: #bdbdbd; }
 
 /* ---------- 互动表情选择面板（居中卡片 .modal + .emote-card） ---------- */
 
@@ -1674,7 +1752,10 @@ html.force-landscape body {
   color: #e0a06a;
 }
 
-/* ---------- 手牌操作条：仅移动横屏布局出现（显示开关由脚本的 .hidden 控制） ---------- */
+/* ---------- 手牌操作条：仅移动横屏布局出现（显示开关由脚本的 .hidden 控制） ---------- *//* ---------- 强制横屏时的「退出」图标钮（默认隐藏，只在 force-landscape 下出现） ----------
+   44×44 纯图标（门 + 外指箭头），替掉原来那个「恢复竖屏」文字胶囊：
+   98×44 → 44×44，占用面积 4312 → 1936 px²（−55%），且不再压住大厅的「分享链接」
+   和对局 HUD 的「解散对局」。 */
 
 .hand-tray {
   display: none;
@@ -1688,7 +1769,8 @@ html.force-landscape body {
 .force-exit {
   display: none;
   position: fixed;
-  /* 与面板内容区右上角对齐（面板内边距 8px），让出的空槽见下面的 .table-head / .game-hud */
+  /* 与面板内容区右上角对齐（面板内边距 8px），让出的空槽见下面的 .table-head / .game-hud *//* 尺寸全部写在这里：`html.mobile-layout button` 是 (0,1,1) 的 padding/min-height 规则，
+   基础 .force-exit 的 (0,1,0) 压不过它 —— 必须用 (0,2,1) 的选择器复位。 */
   top: calc(8px + var(--ls-t));
   right: calc(8px + var(--ls-r));
   z-index: 120;
@@ -1820,7 +1902,9 @@ html.mobile-layout #view-home.home-wrap {
   padding: 0;
   overflow-y: auto;
   /* safe center：内容比容器高时改为从顶部对齐，否则居中会把溢出的上半部分挤到
-     容器外（且滚不到）——「flex 居中 + 溢出」的经典陷阱 */
+     容器外（且滚不到）——「flex 居中 + 溢出」的经典陷阱 *//* 必须显式覆盖基础规则的 max-width: calc(100vw - 32px)：100vw 是「真实视口」宽度，
+     在 html.force-landscape 的逻辑旋转容器里并不等于容器宽度（竖屏 390 vs 容器 844），
+     会把卡片压窄 → 文字换行变多 → 高度撑破容器 → 上下两端被裁。 */
   align-items: center;
   align-items: safe center;
   justify-content: center;
@@ -1833,13 +1917,13 @@ html.mobile-layout .home-card {
      在 html.force-landscape 的逻辑旋转容器里并不等于容器宽度（竖屏 390 vs 容器 844），
      会把卡片压窄 → 文字换行变多 → 高度撑破容器 → 上下两端被裁。 */
   max-width: 100%;
-  padding: 10px 14px;
+  padding: 8px 12px;
 }
 
 /* 移动横屏下把首页压紧：真机横屏时浏览器工具栏会占掉约 60px（可视高只剩 ~330），
    原间距下卡片高 347 > 容器 322 → 需要滚动。压紧后一屏装下，内容不减。 */
 html.mobile-layout .steps {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 html.mobile-layout .step-dot {
@@ -1853,8 +1937,8 @@ html.mobile-layout .step-label {
 }
 
 html.mobile-layout .mode-card {
-  padding: 10px 12px;
-  gap: 5px;
+  padding: 8px 10px;
+  gap: 4px;
 }
 
 html.mobile-layout .mode-icon {
@@ -1873,8 +1957,9 @@ html.mobile-layout .mode-desc {
 }
 
 html.mobile-layout .hint {
-  font-size: 12px;
-  margin-top: 8px;
+  font-size: 11px;
+  margin-top: 4px;
+  line-height: 1.4;
 }
 
 /* 基础规则里的 `@media (max-width:460px)`（模式卡改单列）与 `@media (max-width:560px)`
@@ -1890,12 +1975,8 @@ html.mobile-layout .seats {
   grid-template-columns: repeat(4, 1fr);
 }
 
-html.mobile-layout .steps {
-  margin-bottom: 12px;
-}
-
 html.mobile-layout .home-head {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 /* 步骤连线原本按 25px 圆点定位（top:12px），圆点缩到 21px 后要同步 */
@@ -1908,8 +1989,8 @@ html.mobile-layout .field span {
 }
 
 html.mobile-layout .bg-switch {
-  margin-top: 6px;
-  padding-top: 6px;
+  margin-top: 4px;
+  padding-top: 4px;
 }
 
 html.mobile-layout #view-table {
@@ -1919,29 +2000,50 @@ html.mobile-layout #view-table {
 }
 
 html.mobile-layout .table-head {
-  margin-bottom: 10px;
+  margin-bottom: 6px;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 html.mobile-layout .code {
-  font-size: 20px;
-  letter-spacing: 4px;
+  font-size: 18px;
+  letter-spacing: 3px;
 }
 
+/* 玩法切换器压缩：按钮变小、间距收窄，给大厅留高度 */
+html.mobile-layout .variant-switch {
+  margin: 2px 0 4px;
+}
+
+html.mobile-layout .vs-opt {
+  padding: 4px 12px;
+  font-size: 13px;
+}
+
+/* 准备界面在横屏可视高仅 ~330px，座位 80px 太高会逼出滚动；
+   压到 64px 并收紧内边距，让「房间码 + 座位 + 准备按钮」一屏放下 */
 html.mobile-layout .seats {
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 6px;
+  margin-bottom: 4px;
 }
 
 html.mobile-layout .seat {
-  min-height: 80px;
-  padding: 8px 6px;
-  gap: 3px;
+  min-height: 64px;
+  padding: 6px 4px;
+  gap: 2px;
 }
 
 html.mobile-layout .seat-name {
-  font-size: 15px;
+  font-size: 14px;
+}
+
+html.mobile-layout .seat-tip {
+  margin: 2px 0 4px;
+  font-size: 11px;
+}
+
+html.mobile-layout .actions {
+  margin-bottom: 6px;
 }
 
 html.mobile-layout .seat.swappable:active {
@@ -1950,7 +2052,7 @@ html.mobile-layout .seat.swappable:active {
 }
 
 html.mobile-layout .feed {
-  max-height: 88px;
+  max-height: 34px;
 }
 
 html.mobile-layout .feed li {
@@ -1973,11 +2075,29 @@ html.mobile-layout #view-game {
 
 html.mobile-layout .game-hud {
   flex: none;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
   margin-bottom: 4px;
   font-size: 12px;
+}
+
+html.mobile-layout .hud-group {
+  gap: 6px;
+}
+
+html.mobile-layout .hud-label {
+  font-size: 11px;
+}
+
+html.mobile-layout .hud-badge {
+  font-size: 11px;
+  padding: 1px 8px;
+}
+
+html.mobile-layout .hud-sep {
+  height: 12px;
 }
 
 html.mobile-layout .code.small {
@@ -1997,7 +2117,7 @@ html.mobile-layout .hud-danger {
 }
 
 html.mobile-layout .hud-ghost {
-  margin-left: auto;
+  margin-left: 0;
 }
 
 html.mobile-layout .hud-danger {
@@ -2050,7 +2170,8 @@ html.mobile-layout .controls button {
   min-width: 88px;
 }
 
-/* ---------- 手牌操作条 ---------- */
+/* ---------- 宽横屏（横屏语义宽度 ≥820px）：画布两侧留白很大，
+   把聊天挪进左侧留白，这样它不再压住牌桌 ---------- */
 
 /* 独立占位（非覆盖）：画布高度由 fitCanvas() 按剩余空间反算，因此牌墙、
    自己的副露（吃碰杠）都不会被遮住，只是牌桌整体让出一条手牌带的高度。 */
@@ -2072,6 +2193,11 @@ html.mobile-layout .hand-tray {
 }
 
 /* 轮到自己出牌：整条描金边，一眼看出「该我了」 */
+
+.chat.collapsed {
+  width: 46px;
+  max-width: none;
+}
 html.mobile-layout .hand-tray.active {
   border-color: rgba(230, 193, 75, 0.55);
   box-shadow: 0 0 0 1px rgba(230, 193, 75, 0.25) inset;
@@ -2184,20 +2310,29 @@ html.mobile-layout .dice-msg {
   padding: 6px 14px;
 }
 
-/* ---------- 局内聊天：贴右下，摞在底部「手牌条 + 控件」之上 ---------- */
+/* ---------- 局内聊天：底部抽屉 ----------
+   手机横屏高度紧张（可视高常只有 ~330px），聊天框若摞在右下会遮挡手牌条与底部
+   控件（实测 80px 且 bottom 低于「手牌条 75 + 控件 48」的总高 123px，按钮被盖住）。
+   改为「底部抽屉」：全宽从底部展开，输入框足够宽、打字不局促；聊天是临时行为，
+   展开时遮住牌桌底部可接受，收起态仍是右下角 46px 圆钮。 */
 
 html.mobile-layout .chat {
-  top: auto;
+  left: calc(8px + var(--ls-l));
   right: calc(8px + var(--ls-r));
-  bottom: calc(80px + var(--ls-b));
-  width: 200px;
-  /* 用容器逻辑宽度而非 vw：vw 在逻辑旋转容器里等同「竖屏宽」，会把聊天框压扁 */
-  max-width: calc(var(--ld-w) * 0.46);
+  top: auto;
+  /* --kb-bottom：软键盘高度（JS 由 visualViewport 实测写入）。
+   fixed 相对布局视口——键盘弹出时布局视口不变，不补偿聊天框会被键盘整个盖住 */
+  bottom: calc(8px + var(--ls-b) + var(--kb-bottom, 0px));
+  width: auto;
+  max-width: none;
+  max-height: calc(var(--ld-h) * 0.46);
 }
 
 /* 折叠态收成一个 44×44 图标钮：手机牌桌寸土寸金，展开的消息框会压住牌面，
    收起来只留一个不碍事的圆形按钮（点它再展开）。 */
 html.mobile-layout .chat.collapsed {
+  left: auto;
+  right: calc(8px + var(--ls-r));
   width: 46px;
   border-radius: 12px;
   /* 收到新消息时红点要挂在 46×44 圆钮的右上角外面一点，
@@ -2211,7 +2346,8 @@ html.mobile-layout .chat.collapsed .chat-bar {
   background: transparent;
 }
 
-html.mobile-layout .chat.collapsed .chat-title {
+html.mobile-layout .chat.collapsed .chat-title,
+html.mobile-layout .chat.collapsed .chat-tabs {
   display: none;
 }
 
@@ -2242,6 +2378,29 @@ html.mobile-layout .chat-log {
   font-size: 12px;
 }
 
+/* 移动端日志列表适配 */
+html.mobile-layout .log-list {
+  max-height: calc(var(--ld-h) * 0.26);
+  font-size: 11px;
+  padding: 6px 8px;
+  gap: 3px;
+}
+html.mobile-layout .log-list .log-seat {
+  min-width: 24px;
+  font-size: 10px;
+}
+html.mobile-layout .log-list .log-action {
+  min-width: 28px;
+  font-size: 10px;
+}
+html.mobile-layout .chat-tabs {
+  gap: 1px;
+}
+html.mobile-layout .chat-tab {
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
 html.mobile-layout .chat-ico {
   width: 34px;
   height: 34px;
@@ -2270,9 +2429,10 @@ html.mobile-layout .modal {
 }
 
 html.mobile-layout .modal-card {
-  width: min(760px, 100%);
-  max-height: calc(var(--ld-h) - 16px);
-  padding: 12px 14px;
+  /* 横屏全宽卡片会把结算表格拉得很散；限制最大宽度并居中，列紧凑易读 */
+  width: min(600px, calc(var(--ld-w) - 20px));
+  max-height: calc(var(--ld-h) - 12px);
+  padding: 10px 12px;
   border-radius: 10px;
   overflow-y: auto;
 }
@@ -2304,7 +2464,8 @@ html.mobile-layout #settle-totals {
 }
 
 html.mobile-layout .settle-actions {
-  margin-top: 10px;
+  margin-top: 8px;
+  gap: 8px;
 }
 
 html.mobile-layout #settle .modal-card {
@@ -2347,23 +2508,12 @@ html.mobile-layout.land-narrow .g-status {
   font-size: 12px;
 }
 
-/* ---------- 宽横屏（横屏语义宽度 ≥820px）：画布两侧留白很大，
-   把聊天挪进左侧留白，这样它不再压住牌桌 ---------- */
-
+/* ---------- 宽横屏（横屏语义宽度 ≥820px）----------
+   聊天统一用底部抽屉（见 html.mobile-layout .chat），不再挪进左侧留白。
+   全宽抽屉的输入框更宽、打字更顺，收起态圆钮位置也与其他横屏一致。
+   这里只把抽屉高度放宽一点（宽横屏可视高更大，不必太矮）。 */
 html.mobile-layout.land-wide .chat {
-  left: calc(8px + var(--ls-l));
-  right: auto;
-  top: 50%;
-  bottom: auto;
-  transform: translateY(-50%);
-  width: 150px;
-  max-width: calc(var(--ld-w) * 0.18);
+  max-height: calc(var(--ld-h) * 0.56);
 }
 
-/* 收起态在宽横屏也得收成同一个圆钮：否则 150px 宽的空标题栏会杵在左侧留白里，
-   未读红点还会飘到离图标很远的地方（`html.mobile-layout.land-wide .chat`
-   比基础的 `.chat.collapsed` 更具体，必须在这里显式压回去） */
-html.mobile-layout.land-wide .chat.collapsed {
-  width: 46px;
-  max-width: none;
-}
+

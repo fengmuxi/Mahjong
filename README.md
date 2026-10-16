@@ -42,6 +42,7 @@ docs/
 | 文档 | 说明 |
 |---|---|
 | [integration/ganzhou.md](integration/ganzhou.md) | 赣州冲关接入改动说明：架构接入点、改动文件清单、配置项、**校验方式（人工验证清单）**、待确认事项 |
+| [integration/wechat-miniprogram.md](integration/wechat-miniprogram.md) | **微信小程序迁移方案**：可行性评估（DOM/Canvas/依赖/域名备案/包体积/资质逐项分析）、原生重写路径、P0–P6 分阶段实施、工作量与风险 |
 
 ## 指引（`docs/guides/`）
 

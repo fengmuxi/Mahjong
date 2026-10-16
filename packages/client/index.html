@@ -131,17 +131,9 @@
         <div id="variant-switch" class="variant-switch hidden"></div>
         <div id="seats" class="seats"></div>
         <p class="seat-tip">点其他座位可换位：空位直接换；有人则向对方发起请求，等对方同意。</p>
-        <!-- 首局定庄：四人各掷两骰，点数最大者坐庄（并列者重掷）；未定庄不能开局 -->
-        <div id="dealer-roll" class="dealer-roll hidden">
-          <div class="dr-head">
-            <span class="dr-title">首局定庄</span>
-            <span id="dr-hint" class="dr-hint"></span>
-          </div>
-          <div id="dr-list" class="dr-list"></div>
-          <button id="dr-btn" class="primary">掷骰定庄</button>
-        </div>
         <div class="actions">
           <button id="ready-btn" class="primary">准备</button>
+          <button id="dr-btn" class="primary hidden">打骰子</button>
           <button id="add-bot-btn" class="hidden">加机器人</button>
           <button id="leave-btn">离开房间</button>
           <button id="dissolve-btn" class="danger hidden">解散牌桌</button>
@@ -152,24 +144,26 @@
 
       <section id="view-game" class="panel game hidden">
         <div class="game-hud">
-          <div>房间码 <strong id="g-code" class="code small"></strong></div>
-          <div id="g-wall" class="hud-item"></div>
-          <div id="g-jing" class="hud-item"></div>
-          <button id="auto-btn" class="hud-ghost" type="button" title="托管：服务端代你掷骰 / 应答 / 出牌，可随时取消">托管</button>
-          <button id="emote-btn" class="hud-ghost" type="button" title="互动表情：扔给某位玩家">🎯 互动</button>
-          <button id="rotate-btn" class="hud-ghost hidden" type="button" title="进入全屏并锁定横屏">全屏横屏</button>
-          <button id="dissolve-game-btn" class="hud-danger hidden">解散对局</button>
+          <div class="hud-group">
+            <span class="hud-label">玩法</span>
+            <span id="g-variant" class="hud-badge"></span>
+            <span class="hud-sep"></span>
+            <span class="hud-label">房间</span>
+            <strong id="g-code" class="code small"></strong>
+            <span class="hud-sep"></span>
+            <span id="g-wall" class="hud-item"></span>
+            <span id="g-jing" class="hud-item"></span>
+          </div>
+          <div class="hud-group">
+            <button id="auto-btn" class="hud-ghost" type="button" title="托管：服务端代你掷骰 / 应答 / 出牌，可随时取消">托管</button>
+            <button id="emote-btn" class="hud-ghost" type="button" title="互动表情：扔给某位玩家">🎯 互动</button>
+            <button id="rotate-btn" class="hud-ghost hidden" type="button" title="进入全屏并锁定横屏">全屏横屏</button>
+            <button id="dissolve-game-btn" class="hud-danger hidden">解散对局</button>
+          </div>
         </div>
         <div class="canvas-wrap">
           <canvas id="table" width="1280" height="640"></canvas>
           <div id="countdown" class="countdown hidden"></div>
-          <div id="dice" class="dice-overlay hidden">
-            <div class="dice-row">
-              <div class="die" id="die1"></div>
-              <div class="die" id="die2"></div>
-            </div>
-            <div id="dice-msg" class="dice-msg"></div>
-          </div>
         </div>
         <div id="g-status" class="g-status"></div>
         <!-- 移动端手牌操作条：把画布底部那条缩小后点不准的手牌带，换成一条 ≥40px 的
@@ -181,15 +175,18 @@
         <div id="controls" class="controls"></div>
         <div id="controls-err" class="error hidden"></div>
 
-        <!-- 局内聊天：右下角消息记录框 + 快捷语 / 表情 / 自定义输入 -->
+        <!-- 局内聊天 / 操作记录：右下角浮动面板，标签页切换 -->
         <div class="chat" id="chat">
           <div class="chat-bar">
-            <span class="chat-title">聊天</span>
-            <!-- 未读红点：收起态收到别人的消息时亮起（条数），展开即清 -->
+            <div class="chat-tabs">
+              <button class="chat-tab active" id="chat-tab-chat" type="button">聊天</button>
+              <button class="chat-tab" id="chat-tab-log" type="button">记录</button>
+            </div>
             <span class="chat-badge" id="chat-badge" hidden></span>
             <button id="chat-min" class="chat-min" title="收起 / 展开" aria-label="收起聊天">—</button>
           </div>
           <ul class="chat-log" id="chat-log"></ul>
+          <ul class="log-list" id="log-list"></ul>
           <div class="chat-pop" id="chat-quick" hidden></div>
           <div class="chat-pop" id="chat-emoji" hidden></div>
           <div class="chat-input-row">
@@ -200,6 +197,15 @@
           </div>
         </div>
       </section>
+
+      <!-- 掷骰动画覆盖层：局内仪式与大厅定庄共用（挂在 .app 上，博客/对局两视图都能盖住） -->
+      <div id="dice" class="dice-overlay hidden">
+        <div class="dice-row">
+          <div class="die" id="die1"></div>
+          <div class="die" id="die2"></div>
+        </div>
+        <div id="dice-msg" class="dice-msg"></div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
 
@@ -262,7 +268,6 @@
           <button id="rotate-go" class="primary" type="button">自动横屏（全屏横屏）</button>
           <button id="rotate-force" type="button">强制横屏显示</button>
         </div>
-        <p class="rotate-note" id="rotate-note"></p>
       </div>
     </div>
 

@@ -17,7 +17,7 @@
 import type { Tile } from './index.ts';
 import type { GzSettleDirect, GzSettleMove, GzSettleRow } from './index.ts';
 import { GZ_CONFIG } from './rules/gzconfig.ts';
-import { gzChongguanMult, gzJingba, gzJingHoldings, gzJingPointsOf, type GzJing } from './gzjing.ts';
+import { gzJingHoldings, gzJingPointsOf, gzJingSeatScores, type GzJing } from './gzjing.ts';
 
 /** 杠账（packed = 打出精牌被杠的全包杠：不打进交叉结算，改直付） */
 export interface GzGangRec {
@@ -79,9 +79,9 @@ export function gzSettle(input: GzSettleInput): GzSettleOutcome {
   };
   const crossHoldings = input.holdings.map((h, s) => take(h, excluded[s]));
 
-  // ---- 精分（冲关 / 精霸）；精霸按物理持有判定（谁拿着这套正副精） ----
+  // ---- 精分（§5.2 新口径：逐组配对 → 逐组冲关 → 重复累加）；精霸按物理持有判定 ----
   const holdings = gzJingHoldings(crossHoldings, input.jing);
-  const jingba = gzJingba(input.holdings, input.jing);
+  const jingScores = gzJingSeatScores(crossHoldings, input.holdings, input.jing);
 
   // ---- 杠分：明 / 暗 / 补杠各 2 分；全包杠不走交叉 ----
   const gangOf = [0, 0, 0, 0];
@@ -90,20 +90,21 @@ export function gzSettle(input: GzSettleInput): GzSettleOutcome {
   }
 
   const rows: GzSettleRow[] = [0, 1, 2, 3].map((seat) => {
-    const chongguan = gzChongguanMult(holdings[seat].raw);
-    const jingFinal = holdings[seat].raw * chongguan * (jingba[seat] ? GZ_CONFIG.jingbaMult : 1);
+    const ss = jingScores[seat];
+    const chongguan = ss.combos.reduce((m, c) => Math.max(m, c.chongguan), 1);
     const pattern = input.winner === seat ? input.pattern : 0;
     return {
       seat,
       pi: holdings[seat].pi,
       fu: holdings[seat].fu,
-      jingRaw: holdings[seat].raw,
+      jingRaw: ss.raw,
       chongguan,
-      jingba: jingba[seat],
-      jingFinal,
+      jingba: ss.combos.some((c) => c.jingba),
+      jingCombos: ss.combos,
+      jingFinal: ss.final,
       pattern,
       gang: gangOf[seat],
-      total: jingFinal + pattern + gangOf[seat],
+      total: ss.final + pattern + gangOf[seat],
       delta: 0,
     };
   });

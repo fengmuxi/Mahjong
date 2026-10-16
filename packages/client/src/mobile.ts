@@ -34,6 +34,9 @@ import { tileArt } from './tileart.ts';
 const html = document.documentElement;
 const LS_FORCE = 'mj-force-landscape';
 
+/** 轻提示回调（由 main.ts 传入 showToast；未传入时静默） */
+let notify: ((text: string) => void) | undefined;
+
 /* ===========================================================================
    环境探测
    =========================================================================== */
@@ -161,11 +164,17 @@ export function unlockOrientation(): void {
   }
 }
 
-/** 全屏 + 锁定横屏（可逆：用 exitLandscapeFullscreen 退出）。必须由用户手势触发。 */
+/**
+ * 全屏 + 锁定横屏（可逆：用 exitLandscapeFullscreen 退出）。必须由用户手势触发。
+ *
+ * 两步能力分开处理，任何一步失败都不阻塞另一步：
+ *   ① 全屏：Fullscreen API **不要求安全上下文**，局域网 HTTP 也能用（能隐藏浏览器 UI）；
+ *   ② 锁方向：要求安全上下文 + 文档已全屏（iOS 无此 API），失败如实返回。
+ * 调用方（activateLandscape）在锁不住方向时会叠加 CSS 强制横屏兜底。
+ */
 export async function enterLandscapeFullscreen(): Promise<OrientResult> {
   const cap = platformCapability();
   if (!cap.touch) return { fullscreen: false, locked: false, reason: 'no-api' };
-  if (!cap.secure) return { fullscreen: false, locked: false, reason: 'insecure-context' };
   if (!cap.fullscreen && !cap.lock) {
     return { fullscreen: false, locked: false, reason: cap.ios ? 'ios' : 'no-api' };
   }
@@ -174,31 +183,35 @@ export async function enterLandscapeFullscreen(): Promise<OrientResult> {
   unlockOrientation();
 
   let fs = fullscreenActive();
-  if (!fs) {
+  if (!fs && cap.fullscreen) {
     const el = document.documentElement as FsElement;
     const fn = el.requestFullscreen ?? el.webkitRequestFullscreen;
     if (typeof fn !== 'function') return { fullscreen: false, locked: false, reason: 'no-api' };
     try {
       await fn.call(el, { navigationUI: 'hide' });
     } catch {
-      return { fullscreen: false, locked: false, reason: 'fullscreen-rejected' };
+      /* 全屏被拒：继续尝试锁方向，最后如实返回 */
     }
     fs = await waitFullscreen(); // 关键：等 fullscreenchange，别紧接着就锁
-    if (!fs) return { fullscreen: false, locked: false, reason: 'fullscreen-rejected' };
   }
 
-  if (!cap.lock) return { fullscreen: true, locked: false, reason: cap.ios ? 'ios' : 'no-api' };
-
-  for (let i = 0; i < 3; i++) {
-    try {
-      const so = screen.orientation as unknown as { lock: (o: string) => Promise<void> };
-      await so.lock('landscape');
-      return { fullscreen: true, locked: true };
-    } catch {
-      await sleep(150); // 平台差异：稍等重试，仍失败则如实返回
+  if (cap.lock) {
+    for (let i = 0; i < 3; i++) {
+      try {
+        const so = screen.orientation as unknown as { lock: (o: string) => Promise<void> };
+        await so.lock('landscape');
+        return { fullscreen: fs, locked: true };
+      } catch {
+        await sleep(150); // 平台差异：稍等重试，仍失败则如实返回
+      }
     }
   }
-  return { fullscreen: true, locked: false, reason: 'lock-rejected' };
+
+  return {
+    fullscreen: fs,
+    locked: false,
+    reason: !cap.lock ? (cap.ios ? 'ios' : 'no-api') : 'lock-rejected',
+  };
 }
 
 /** 退出全屏（顺序很重要：先解锁方向，再退全屏，最后再解一次兜底）。 */
@@ -218,7 +231,7 @@ export async function exitLandscapeFullscreen(): Promise<void> {
 export function failureText(reason?: OrientFailure): string {
   switch (reason) {
     case 'insecure-context':
-      return '当前用局域网 HTTP 打开，浏览器禁止网页全屏与锁定方向（需 HTTPS，或把网页加到主屏幕）。请直接横握手机，或点「强制横屏显示」。';
+      return '当前用局域网 HTTP 打开，浏览器禁止网页锁定方向（需 HTTPS）。请直接横握手机，或点「强制横屏显示」。';
     case 'ios':
       return 'iPhone / iPad 的浏览器不支持网页锁定方向（Apple 未开放该能力）。请直接横握手机，或点「强制横屏显示」。';
     case 'no-api':
@@ -226,10 +239,41 @@ export function failureText(reason?: OrientFailure): string {
     case 'fullscreen-rejected':
       return '浏览器拒绝了全屏请求，请直接横握手机，或点「强制横屏显示」。';
     case 'lock-rejected':
-      return '已进入全屏，但本机不允许锁定方向，请横握手机（或点「强制横屏显示」）。';
+      return '本机不允许锁定方向，已切换为强制横屏显示。';
     default:
       return '';
   }
+}
+
+/* ===========================================================================
+   「自动横屏」统一入口
+   =========================================================================== */
+
+/**
+ * 点击「自动横屏」后唯一起点：
+ *   能锁方向（HTTPS / localhost）→ 全屏 + 锁定横屏；
+ *   锁不住（iOS / 局域网 HTTP）→ 仍然进全屏（隐藏浏览器 UI）**并叠加 CSS 强制横屏**，
+ *   至少保证牌桌是横的 —— 而不是用户抱怨的「只全屏、还是竖屏」。
+ */
+async function activateLandscape(): Promise<void> {
+  const cap = platformCapability();
+  if (!cap.fullscreen && !cap.lock) {
+    setForceLandscape(true);
+    return;
+  }
+  const r = await enterLandscapeFullscreen();
+  if (r.locked) return;
+  // 锁不住方向：叠加 CSS 强制横屏兜底，牌桌保证是横的
+  setForceLandscape(true);
+  notify?.(r.fullscreen ? '已切换为强制横屏显示' : failureText(r.reason));
+  sync();
+}
+
+/** 退出横屏：先退 CSS 强制横屏，再退全屏（顺序与进入时相反） */
+async function deactivateLandscape(): Promise<void> {
+  setForceLandscape(false);
+  if (fullscreenActive()) await exitLandscapeFullscreen();
+  sync();
 }
 
 /* ===========================================================================
@@ -288,6 +332,13 @@ function sync(): void {
   s.setProperty('--vv-h', `${h}px`);
   s.setProperty('--ld-w', `${landW}px`);
   s.setProperty('--ld-h', `${landH}px`);
+
+  // 软键盘高度补偿：fixed 定位相对「布局视口」，键盘弹出时布局视口不变，
+  // 底部元素会被键盘盖住；用 visualViewport 实测差值把底部元素顶到键盘上方。
+  // chat-typing（打字临时退出旋转）与 mobile-layout（真实横屏）下都需要。
+  const vv = window.visualViewport;
+  const kb = Math.max(0, Math.round(window.innerHeight - (vv?.height ?? h) - (vv?.offsetTop ?? 0)));
+  s.setProperty('--kb-bottom', `${kb}px`);
 
   syncRotateHint();
   syncOrientButton();
@@ -435,7 +486,6 @@ export function renderHandTray(state: HandTrayState | null): void {
    =========================================================================== */
 
 let hintEl: HTMLElement | null = null;
-let noteEl: HTMLElement | null = null;
 let orientBtn: HTMLButtonElement | null = null;
 
 function syncRotateHint(): void {
@@ -443,11 +493,6 @@ function syncRotateHint(): void {
   if (!hintEl) return;
   // 竖屏且未开强制横屏时才盖提示；桌面端永不出现
   hintEl.classList.toggle('hidden', !(isTouchDevice() && isPortrait() && !forceLandscape));
-}
-
-function setNote(text: string): void {
-  if (!noteEl) noteEl = document.getElementById('rotate-note');
-  if (noteEl) noteEl.textContent = text;
 }
 
 /** 方向按钮文案随状态变化：进全屏 / 退全屏 / 强制横屏；强制横屏时整钮让位给右上角的「退出」图标钮 */
@@ -468,10 +513,9 @@ function syncOrientButton(): void {
 }
 
 async function onOrientButton(): Promise<void> {
-  const cap = platformCapability();
   if (forceLandscape) {
     // 该状态下这枚按钮已隐藏（功能交给右上角的 #force-exit），这里只是防御
-    setForceLandscape(false);
+    await deactivateLandscape();
     return;
   }
   if (fullscreenActive()) {
@@ -479,14 +523,7 @@ async function onOrientButton(): Promise<void> {
     sync();
     return;
   }
-  if (!cap.lock) {
-    // 平台不支持锁定方向 → 直接用 CSS 逻辑旋转兜底，比"点了没反应"有用
-    setForceLandscape(true);
-    return;
-  }
-  const r = await enterLandscapeFullscreen();
-  if (!r.locked && r.reason) setNote(failureText(r.reason));
-  sync();
+  await activateLandscape();
 }
 
 /* ===========================================================================
@@ -494,9 +531,12 @@ async function onOrientButton(): Promise<void> {
    =========================================================================== */
 
 /**
- * 初始化移动端行为。`onLayout` 在屏幕尺寸/方向变化后回调（供页面重算布局）。
+ * 初始化移动端行为。
+ * `onLayout` 在屏幕尺寸/方向变化后回调（供页面重算布局）；
+ * `notify` 用于轻提示（如「已切换为强制横屏显示」）。
  */
-export function initMobile(onLayout?: () => void): void {
+export function initMobile(onLayout?: () => void, notifyFn?: (text: string) => void): void {
+  notify = notifyFn;
   const touch = isTouchDevice();
 
   // 恢复上次的强制横屏选择
@@ -521,16 +561,12 @@ export function initMobile(onLayout?: () => void): void {
   document.addEventListener('webkitfullscreenchange', () => scheduleSync());
 
   if (touch) {
-    // 遮挡层：主按钮走「全屏 + 锁横屏」，次按钮无权限要求地强制横屏
-    document.getElementById('rotate-go')?.addEventListener('click', async () => {
-      const r = await enterLandscapeFullscreen();
-      setNote(r.locked ? '' : failureText(r.reason));
-      sync();
-    });
+    // 遮挡层：主按钮走「全屏 + 锁横屏，锁不住则强制横屏」，次按钮无权限要求地强制横屏
+    document.getElementById('rotate-go')?.addEventListener('click', () => void activateLandscape());
     document.getElementById('rotate-force')?.addEventListener('click', () => setForceLandscape(true));
     // 强制横屏状态下的常驻「退出横屏」图标钮（44×44，右上角）：
     // 该状态下大厅 / 对局面板的入口可能不可见，必须随时能点回来
-    document.getElementById('force-exit')?.addEventListener('click', () => setForceLandscape(false));
+    document.getElementById('force-exit')?.addEventListener('click', () => void deactivateLandscape());
 
     const rb = document.getElementById('rotate-btn');
     if (rb) rb.addEventListener('click', () => void onOrientButton());

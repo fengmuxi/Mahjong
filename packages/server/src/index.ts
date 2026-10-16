@@ -23,7 +23,7 @@ import { Game, type GameEvent } from './game.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(__dirname, '../../client/dist');
-const PORT = Number(process.env.PORT ?? 3000);
+const PORT = Number(process.env.PORT ?? 3130);
 const TURN_MS = Number(process.env.MAHJONG_TURN_MS ?? 15000);
 /** 掉线托管：回合者无连接时的自动出牌等待 */
 const AUTO_MS = Number(process.env.MAHJONG_AUTO_MS ?? 3000);
@@ -82,6 +82,8 @@ interface Room {
   autoTimer: NodeJS.Timeout | null;
   /** 掷骰动画结束后的视图刷新（等待掷骰阶段不自动掷——一直等到玩家点击） */
   diceEndTimer: NodeJS.Timeout | null;
+  /** 首局定庄：此定时器让最后一掷的骰子动画与金色点数亮满监听再进对局 */
+  dealerStartTimer: NodeJS.Timeout | null;
 }
 
 const rooms = new Map<string, Room>();
@@ -312,15 +314,22 @@ function onGameOver(room: Room): void {
       const r = (s: number) => outcome.rows[s];
 
       const notes: string[] = [];
-      // 精分明细：原始分 → 冲关倍数 → 精霸 → 终值（含牌河：打出无人碰的精也归打出者）
+      // 精分明细（§5.2 新口径：12 张精两两配对成 6 组，逐组冲关、相同组合重复累加）
       notes.push(
         `精分：${[0, 1, 2, 3]
           .map((s) => {
-            const flags = r(s).jingba ? '（精霸×2）' : '';
-            const cg = r(s).chongguan > 1 ? `→冲关×${r(s).chongguan}` : '';
-            return `${windOf(room, s)} ${r(s).jingRaw}${cg}${flags}=${r(s).jingFinal}`;
+            const row = r(s);
+            const parts = row.jingCombos
+              .filter((c) => c.score > 0)
+              .map((c) => {
+                const n = c.count > 1 ? `×${c.count}` : '';
+                const cg = c.chongguan > 1 ? `·冲关×${c.chongguan}` : '';
+                const jb = c.jingba ? '·精霸×2' : '';
+                return `${tileName(c.zheng)}+${tileName(c.fu)}${n}${cg}${jb}=${c.score}`;
+              });
+            return `${windOf(room, s)} ${parts.length > 0 ? parts.join('，') : '0'}=${row.jingFinal}`;
           })
-          .join('；')}（正精2分/副精1点，重叠叠加）`,
+          .join('；')}（正精2分/副精1分，逐组冲关）`,
       );
       if (winner !== null) {
         const how = outcome.direct.some((d) => d.kind === 'zimo') ? '自摸三家各付全分' : '点炮：点炮者付全分、其余各4';
@@ -534,6 +543,8 @@ function pruneGonePlayers(room: Room): boolean {
     // 只剩机器人：没人看了，收掉房间
     if (room.windowTimer) clearTimeout(room.windowTimer);
     if (room.autoTimer) clearTimeout(room.autoTimer);
+    if (room.dealerStartTimer) clearTimeout(room.dealerStartTimer);
+    room.dealerStartTimer = null;
     clearDiceTimers(room);
     rooms.delete(room.code);
     return false;
@@ -644,28 +655,43 @@ function autoDiscardTile(view: GameView): number {
   return best;
 }
 
-/** 托管回合行动：能自摸就自摸、能暗杠 / 补杠就杠，否则自动出牌 */
+/** 托管回合行动：能自摸就自摸、能暗杠 / 补杠就杠，否则自动出牌。
+ *  每步失败（引擎拒收）就降级下一步，绝不空转——否则无人再推进、整桌卡死。 */
 function autoTurn(room: Room, seat: number): void {
   const g = room.game;
   if (!g || g.phase !== 'playing' || g.turn !== seat || g.ritualActive || g.pending) return;
   if (!isAutoSeat(room, seat)) return;
   const view = g.viewFor(seat, null);
-  try {
-    // 只有刚摸牌时才会有自摸 / 暗杠 / 补杠；吃碰后的回合直接出牌
-    if (g.justDrew) {
-      if (view.canZimo) {
+  // 只有刚摸牌时才会有自摸 / 暗杠 / 补杠；吃碰后的回合直接出牌
+  if (g.justDrew) {
+    if (view.canZimo) {
+      try {
         applyGameEvents(room, g.zimo(seat));
         return;
-      }
-      const sg = view.selfGangs[0];
-      if (sg) {
-        applyGameEvents(room, g.selfGang(seat, sg.kind, sg.tile));
-        return;
+      } catch {
+        /* 竞态：继续往下走（杠 / 出牌） */
       }
     }
-    applyGameEvents(room, g.discard(seat, autoDiscardTile(view)));
-  } catch {
-    /* 状态竞态忽略：下一次状态推进（applyGameEvents → syncAuto）会重新调度 */
+    const sg = view.selfGangs[0];
+    if (sg) {
+      try {
+        applyGameEvents(room, g.selfGang(seat, sg.kind, sg.tile));
+        return;
+      } catch {
+        /* 竞态：继续出牌 */
+      }
+    }
+  }
+  // 出牌：AI 首选，被拒则按手牌顺序逐个兜底（防冻结牌 / 强制出牌等极端组合）
+  const preferred = autoDiscardTile(view);
+  const order = [preferred, ...view.myTiles.filter((t) => t !== preferred)];
+  for (const t of order) {
+    try {
+      applyGameEvents(room, g.discard(seat, t));
+      return;
+    } catch {
+      /* 换下一张 */
+    }
   }
 }
 
@@ -745,9 +771,15 @@ function allReady(room: Room): boolean {
   return room.players.length === MAX_SEATS && room.players.every((p) => p.ready || p.isBot);
 }
 
-/** 能否开局：四人就绪 **且** 首局庄家已定（首局必须先掷骰定庄，之后沿用轮庄） */
+/** 当前玩法是否需要首局掷骰定庄（南昌默认东起庄 → false；赣州四家比大小 → true） */
+function needsDealerRoll(room: Room): boolean {
+  return getRules(room.variant).flow.firstDealerRoll === true;
+}
+
+/** 能否开局：四人就绪，且（需要定庄的玩法）首局庄家已定 */
 function canStart(room: Room): boolean {
-  return allReady(room) && room.firstDealerDecided;
+  if (!allReady(room)) return false;
+  return needsDealerRoll(room) ? room.firstDealerDecided : true;
 }
 
 /**
@@ -789,6 +821,7 @@ function pruneDealerRolls(room: Room): void {
  * 结算后检查能否直接开局（玩家完全可能「先准备、后掷骰」）。
  */
 function pushDealerRoll(room: Room, seat: number, d1: number, d2: number): void {
+  if (!needsDealerRoll(room)) return;
   if (room.phase !== 'lobby' || room.game || room.firstDealerDecided) return;
   const p = room.players.find((x) => x.seat === seat);
   if (!p || room.dealerRolls.some((r) => r.seat === seat)) return;
@@ -812,7 +845,16 @@ function pushDealerRoll(room: Room, seat: number, d1: number, d2: number): void 
     broadcastEvent(room, `等待其余玩家掷骰（${room.dealerRolls.length}/${room.players.length}）`);
   }
   broadcastLobby(room);
-  if (room.phase === 'lobby' && canStart(room)) startGame(room);
+  if (room.phase === 'lobby' && canStart(room)) {
+    // 刚定下庄：让最后一掷的骰子动画与座位上的金色点数展示约 2.6s 再进对局，
+    // 否则玩家点完骰子瞬间就跳到牌桌，什么都看不到
+    if (room.dealerStartTimer) clearTimeout(room.dealerStartTimer);
+    room.dealerStartTimer = setTimeout(() => {
+      room.dealerStartTimer = null;
+      // 窗口期内可能有人离场/房倒：逐项复核再开
+      if (room.phase === 'lobby' && !room.game && room.firstDealerDecided && canStart(room)) startGame(room);
+    }, 2600);
+  }
   // 并列重掷后由机器人补齐（首次触发在 addBot / join 时）
   syncBotDealerRolls(room);
 }
@@ -822,6 +864,7 @@ function pushDealerRoll(room: Room, seat: number, d1: number, d2: number): void 
  * 不满 4 人时不掷（与人类口径一致：等满 4 人再定庄）。
  */
 function syncBotDealerRolls(room: Room): void {
+  if (!needsDealerRoll(room)) return;
   if (room.phase !== 'lobby' || room.game || room.firstDealerDecided) return;
   if (room.players.length < MAX_SEATS) return;
   for (const p of room.players) {
@@ -855,6 +898,7 @@ function removePlayer(room: Room, seat: number): void {
   pruneDealerRolls(room); // 定庄掷骰随人离场作废
   // 已定庄但庄家本人离场（如房主移除坐庄的机器人）：定庄作废、回大厅重掷，否则开局庄位悬空卡死
   if (
+    needsDealerRoll(room) &&
     !room.game &&
     room.firstDealerDecided &&
     !room.players.some((p) => p.seat === room.nextDealer)
@@ -867,6 +911,8 @@ function removePlayer(room: Room, seat: number): void {
     // 一个人（或只剩机器人）都不剩 → 收掉房间
     if (room.windowTimer) clearTimeout(room.windowTimer);
     if (room.autoTimer) clearTimeout(room.autoTimer);
+    if (room.dealerStartTimer) clearTimeout(room.dealerStartTimer);
+    room.dealerStartTimer = null;
     clearDiceTimers(room);
     rooms.delete(room.code);
     return;
@@ -981,6 +1027,7 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         deadlineAt: null,
         autoTimer: null,
         diceEndTimer: null,
+        dealerStartTimer: null,
       };
       rooms.set(code, room);
       binding.set(ws, { code, seat });
@@ -1299,6 +1346,8 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       }
       if (room.windowTimer) clearTimeout(room.windowTimer);
       if (room.autoTimer) clearTimeout(room.autoTimer);
+      if (room.dealerStartTimer) clearTimeout(room.dealerStartTimer);
+      room.dealerStartTimer = null;
       clearDiceTimers(room);
       rooms.delete(room.code);
       return;

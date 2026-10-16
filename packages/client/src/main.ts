@@ -7,7 +7,7 @@ import {
   type GameView,
   type ServerMsg,
 } from '@shared/index.ts';
-import { DEFAULT_VARIANT, VARIANT_LIST, variantName } from '@shared/rules/index.ts';
+import { DEFAULT_VARIANT, VARIANT_LIST, getRules, variantName } from '@shared/rules/index.ts';
 import { seatWind, tileName, windName } from '@shared/tiles.ts';
 import { Table } from './table.ts';
 import { preloadTiles } from './tileart.ts';
@@ -29,14 +29,14 @@ const homeError = $<HTMLElement>('#home-error');
 const roomCodeEl = $<HTMLElement>('#room-code');
 const meEl = $<HTMLElement>('#me');
 const seatsEl = $<HTMLElement>('#seats');
-const dealerRollEl = $<HTMLElement>('#dealer-roll');
-const drHintEl = $<HTMLElement>('#dr-hint');
-const drListEl = $<HTMLElement>('#dr-list');
 const drBtn = $<HTMLButtonElement>('#dr-btn');
 const feedEl = $<HTMLElement>('#feed');
 // 局内聊天
 const chatEl = $<HTMLElement>('#chat');
 const chatLogEl = $<HTMLElement>('#chat-log');
+const logListEl = $<HTMLElement>('#log-list');
+const chatTabChat = $<HTMLButtonElement>('#chat-tab-chat');
+const chatTabLog = $<HTMLButtonElement>('#chat-tab-log');
 const chatInputEl = $<HTMLInputElement>('#chat-input');
 const chatSendBtn = $<HTMLButtonElement>('#chat-send');
 const chatMinBtn = $<HTMLButtonElement>('#chat-min');
@@ -63,6 +63,7 @@ const leaveBtn = $<HTMLButtonElement>('#leave-btn');
 const allReadyEl = $<HTMLElement>('#all-ready');
 const connBanner = $<HTMLElement>('#conn-banner');
 const gCode = $<HTMLElement>('#g-code');
+const gVariant = $<HTMLElement>('#g-variant');
 const gWall = $<HTMLElement>('#g-wall');
 const gJing = $<HTMLElement>('#g-jing');
 const gStatus = $<HTMLElement>('#g-status');
@@ -123,7 +124,7 @@ preloadTiles(() => {
 
 // 移动端适配：横屏引导 + 画布尺寸自适应 + 手牌操作条。
 // 桌面端只会被打上 html 标记，行为与观感完全不变。
-initMobile();
+  initMobile(undefined, showToast);
 setTrayDiscardHandler((tile) => {
   tryDiscard(tile); // 与画布点牌同一条出口（先过报杠拦截）
 });
@@ -386,6 +387,7 @@ for (const input of [nameInput, codeInput]) {
 renderVariants();
 renderBgSwitch();
 initChat();
+initChatTabs();
 initEmote();
 
 // 分享链接（?room=房间码）：**仅作为房间码预填充的入口** ——
@@ -649,6 +651,66 @@ function initChat(): void {
 }
 
 // ---------------------------------------------------------------------------
+// 操作记录（对局日志）
+// ---------------------------------------------------------------------------
+
+const LOG_ACTION_LABEL: Record<string, string> = {
+  discard: '出牌',
+  chi: '吃',
+  peng: '碰',
+  gang: '杠',
+  angang: '暗杠',
+  bugang: '补杠',
+  hu: '胡',
+  draw: '流局',
+};
+
+/** 渲染操作记录列表 */
+function renderLog(v: GameView): void {
+  logListEl.textContent = '';
+  const names = v.names ?? [];
+  for (const entry of v.log) {
+    const li = document.createElement('li');
+    const seat = document.createElement('span');
+    seat.className = 'log-seat';
+    seat.textContent = entry.seat >= 0 ? (names[entry.seat] ?? `座位${entry.seat + 1}`) : '系统';
+    const action = document.createElement('span');
+    action.className = `log-action ${entry.kind}`;
+    action.textContent = LOG_ACTION_LABEL[entry.kind] ?? entry.kind;
+    li.append(seat, action);
+    if (entry.tiles.length > 0) {
+      const tiles = document.createElement('span');
+      tiles.className = 'log-tiles';
+      tiles.textContent = entry.tiles.map(tileName).join('');
+      li.append(tiles);
+    }
+    if (entry.note) {
+      const note = document.createElement('span');
+      note.className = 'log-note';
+      note.textContent = entry.note;
+      li.append(note);
+    }
+    logListEl.append(li);
+  }
+  logListEl.scrollTop = logListEl.scrollHeight;
+}
+
+/** 初始化标签页切换 */
+function initChatTabs(): void {
+  chatTabChat.addEventListener('click', () => {
+    chatEl.classList.remove('show-log');
+    chatTabChat.classList.add('active');
+    chatTabLog.classList.remove('active');
+  });
+  chatTabLog.addEventListener('click', () => {
+    chatEl.classList.add('show-log');
+    chatTabLog.classList.add('active');
+    chatTabChat.classList.remove('active');
+    if (lastGameView) renderLog(lastGameView);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // 互动表情（定向投掷）：选玩家 → 选表情 → 服务端广播 → 各端在**目标位置**播动画
 // ---------------------------------------------------------------------------
 
@@ -908,16 +970,15 @@ function renderGzSettle(m: SettleMsg): void {
     const tr = document.createElement('tr');
     if (r.seat === mySeat) tr.className = 'me-row';
     const total = m.totals.find((t) => t.seat === r.seat)?.value ?? 0;
-    const jingDesc =
-      r.jingRaw === 0 && !r.jingba
-        ? '—'
-        : `${r.jingRaw}${r.chongguan > 1 ? ` ×${r.chongguan}` : ''}${r.jingba ? ' ·精霸' : ''}`;
+    // 精分（§5.2 新口径）：逐组冲关，显示终值；冲关列列出各组倍数
+    const cgs = [...new Set(r.jingCombos.filter((c) => c.score > 0 && c.chongguan > 1).map((c) => c.chongguan))];
+    const jingDesc = r.jingFinal === 0 ? '—' : `${r.jingFinal}${r.jingCombos.some((c) => c.jingba) ? ' ·精霸' : ''}`;
     const cells = [
       nameOf(r.seat),
       String(r.pi),
       String(r.fu),
       jingDesc,
-      r.chongguan > 1 ? `×${r.chongguan}` : '—',
+      cgs.length > 0 ? cgs.map((x) => `×${x}`).join('') : '—',
       r.pattern > 0 ? String(r.pattern) : '—',
       r.gang > 0 ? String(r.gang) : '—',
       String(r.total),
@@ -1054,6 +1115,13 @@ function renderLobby(s: StateMsg): void {
   roomVariantEl.classList.remove('hidden');
   currentVariant = s.variant;
   buildVariantSwitch(variantSwitchEl, s.variant, s.players.some((p) => p.seat === s.you && p.isHost));
+  // 首局定庄状态（仅赣州起用）：?? 兜底——滚动升级时可能短暂连到还没带这些字段的旧服务端，别整页崩。
+  const dealerRolls = s.dealerRolls ?? [];
+  const dealerDecided = s.dealerDecided ?? false;
+  const needRoll = getRules(s.variant).flow.firstDealerRoll === true;
+  const inDealerRoll = needRoll && !dealerDecided;
+  const dealerRollOf = (seat: number) => dealerRolls.find((r) => r.seat === seat);
+
   const me = s.players.find((p) => p.seat === s.you);
   const meScore = s.totals?.[s.you] ?? 0;
   meEl.textContent = me
@@ -1086,6 +1154,14 @@ function renderLobby(s: StateMsg): void {
       sc.className = 'seat-score ' + (tv > 0 ? 'pos' : tv < 0 ? 'neg' : 'zero');
       sc.textContent = tv > 0 ? `+${tv}` : `${tv}`;
       nm.append(sc);
+      // 定庄掷骰期间（含已定庄）：已掷骰结果（金色，跟在名字旁）
+      const roll = needRoll ? dealerRollOf(seat) : undefined;
+      if (roll) {
+        const dr = document.createElement('span');
+        dr.className = 'seat-dr';
+        dr.textContent = `${roll.dice[0]} + ${roll.dice[1]} = ${roll.sum} 点`;
+        nm.append(dr);
+      }
     }
     const st = document.createElement('div');
     st.className = 'seat-state';
@@ -1148,38 +1224,27 @@ function renderLobby(s: StateMsg): void {
   readyBtn.textContent = self && self.ready ? '取消准备' : '准备';
   allReadyEl.classList.toggle('hidden', !s.allReady);
 
-  // 首局定庄：未定庄前显示掷骰区（每人一掷，点数最大者坐庄；并列者重掷）
-  // 注：字段做 ?? 兜底——滚动升级时可能短暂连到还没带这些字段的旧服务端，别整页崩。
-  const rolls = s.dealerRolls ?? [];
-  const decided = s.dealerDecided ?? false;
-  dealerRollEl.classList.toggle('hidden', decided);
-  if (!decided) {
-    const mine = rolls.find((r) => r.seat === s.you);
-    drListEl.textContent = '';
-    for (let seat = 0; seat < 4; seat++) {
-      const p = s.players.find((x) => x.seat === seat);
-      const roll = rolls.find((r) => r.seat === seat);
-      const row = document.createElement('div');
-      row.className = `dr-row${roll ? ' done' : ''}${seat === s.you ? ' self' : ''}`;
-      const who = document.createElement('span');
-      who.className = 'dr-who';
-      who.textContent = `${wind(seat)}·${p ? p.name : '空位'}`;
-      const val = document.createElement('span');
-      val.className = 'dr-val';
-      val.textContent = roll ? `${roll.dice[0]}+${roll.dice[1]} = ${roll.sum}` : p ? '未掷' : '—';
-      row.append(who, val);
-      drListEl.append(row);
-    }
-    const rolled = rolls.length;
+  // 首局定庄（仅赣州）：按钮在「准备」旁边；未定庄前可见，掷过/未满 4 人置灰
+  drBtn.classList.toggle('hidden', !inDealerRoll);
+  if (inDealerRoll) {
+    const mine = dealerRollOf(s.you);
     // 未满 4 人不允许定庄（服务端同样校验，这里只是把按钮置灰避免点了才报错）
     drBtn.disabled = !!mine || !self || s.players.length < 4;
-    drBtn.textContent = mine ? `已掷出 ${mine.sum} 点` : '掷骰定庄';
-    drHintEl.textContent =
-      s.players.length < 4
-        ? `等满 4 人（${s.players.length}/4）`
-        : rolled < 4
-          ? `各掷一次，点数最大者坐庄（${rolled}/4）`
-          : '并列者重掷';
+    drBtn.textContent = mine ? `已掷出 ${mine.sum} 点` : '打骰子';
+  }
+  // 最新一次掷骰 → 播局内同款覆盖层动画（翻滚 → 定格；结束后点数留在座位卡上）
+  // 不受 decided 门控：定庄那一掷也要播；动画 key 保证同一掷不重播
+  if (needRoll && dealerRolls.length > 0) {
+    const latest = dealerRolls[dealerRolls.length - 1];
+    const who = s.players.find((p) => p.seat === latest.seat)?.name ?? `${wind(latest.seat)}家`;
+    runDiceAnim(
+      latest.dice,
+      `${dealerRolls.length}-${latest.seat}-${latest.sum}`,
+      `${who} 掷骰…`,
+      (d) => `${who} 掷出 ${d[0]} + ${d[1]} = ${latest.sum} 点`,
+      1200,
+      2600,
+    );
   }
 }
 
@@ -1272,6 +1337,13 @@ function requestSwap(toSeat: number): void {
 
 // ---------- 对局 ----------
 
+/** 精牌列表文案：同牌面合并为「牌面×张数」（6 正精 / 6 副精 全列，不去重） */
+function jingList(tiles: number[]): string {
+  const c = new Map<number, number>();
+  for (const t of tiles) c.set(t, (c.get(t) ?? 0) + 1);
+  return [...c.entries()].map(([t, n]) => `${tileName(t)}${n > 1 ? `×${n}` : ''}`).join('/');
+}
+
 function renderGame(v: GameView): void {
   lastGameView = v;
   if (v.variant) currentVariant = v.variant;
@@ -1287,6 +1359,7 @@ function renderGame(v: GameView): void {
   autoBtn.classList.toggle('on', autoOn);
   autoBtn.textContent = autoOn ? '托管中' : '托管';
   gCode.textContent = v.code;
+  gVariant.textContent = v.variant ? variantName(v.variant) : '';
   const rp = ritualPhase(v);
   if (v.ceremony?.kind === 'deal' && rp === 'wait') gWall.textContent = '牌墙 136';
   else if (v.ceremony?.kind === 'deal' && rp === 'roll') gWall.textContent = '牌墙 …';
@@ -1297,7 +1370,7 @@ function renderGame(v: GameView): void {
       : v.gz
         ? v.gz.zheng.length > 0
           ? v.gz.revealed
-            ? `正精 ${v.gz.zheng.map((t) => tileName(t)).join('/')} · 副精 ${v.gz.fu.map((t) => tileName(t)).join('/')}`
+            ? `正精 ${jingList(v.gz.zheng)} · 副精 ${jingList(v.gz.fu)}`
             : `正精 ${tileName(v.gz.zheng[0])}${
                 v.gz.fu.length > 0 ? ` · 副精 ${tileName(v.gz.fu[0])}` : ''
               }（其余 10 张结算揭晓）`
@@ -1308,6 +1381,7 @@ function renderGame(v: GameView): void {
   controlsErr.classList.add('hidden');
   table.render(v);
   renderControls(v);
+  renderLog(v);
   tickCountdown();
 
   // 仪式驱动：骰子覆盖层 + 动画结束后的控件刷新
@@ -1540,7 +1614,7 @@ function setDieFace(el: HTMLDivElement, v: number): void {
 }
 
 const diceAnim: {
-  key: number | null;
+  key: string | number | null;
   t1?: ReturnType<typeof setTimeout>;
   t2?: ReturnType<typeof setTimeout>;
   t3?: ReturnType<typeof setTimeout>;
@@ -1576,15 +1650,19 @@ function diceResultText(v: GameView): string {
   return `点数和 ${sum} → 摸牌处逆时针第 ${sum} 列 · 上层取牌（无则取下层）`;
 }
 
-/** 播放一次掷骰动画（同一 rollAt 只播一次；时长取服务端窗口） */
-function playDice(v: GameView): void {
-  const c = v.ceremony;
-  if (!c || c.state !== 'rolling' || c.rollAt === null || c.until === null) return;
-  if (diceAnim.key === c.rollAt) return;
+/** 通用掷骰动画引擎：翻滚随机面 → 定格真实点数 → 点数文字，结束后自动隐藏。
+ *  局内仪式（playDice）与大厅定庄共用同一覆盖层。 */
+function runDiceAnim(
+  dice: [number, number],
+  key: string | number,
+  rollingMsg: string,
+  landMsg: (dice: [number, number]) => string,
+  tumbleMs: number,
+  hideMs?: number,
+): void {
+  if (diceAnim.key === key) return;
   clearDiceOverlay();
-  diceAnim.key = c.rollAt;
-  const dur = Math.max(400, c.until - c.rollAt);
-  const tumbleMs = Math.min(c.kind === 'gang' ? 1500 : 2200, Math.floor(dur * 0.5));
+  diceAnim.key = key;
   diceEl.classList.remove('hidden');
   // 翻滚期间持续刷随机点数（骰子始终有面），定格时换真实结果
   const scramble = (): void => {
@@ -1593,8 +1671,7 @@ function playDice(v: GameView): void {
   };
   scramble();
   diceAnim.scramble = setInterval(scramble, 90);
-  diceMsg.textContent =
-    c.kind === 'deal' ? '庄家掷骰…' : c.kind === 'jing' ? '翻精掷骰…' : '杠后掷骰…';
+  diceMsg.textContent = rollingMsg;
   diceAnim.t1 = setTimeout(() => diceEl.classList.add('show'), 30);
   die1.classList.add('tumbling');
   die2.classList.add('tumbling');
@@ -1605,13 +1682,29 @@ function playDice(v: GameView): void {
     }
     die1.classList.remove('tumbling');
     die2.classList.remove('tumbling');
-    if (c.dice) {
-      setDieFace(die1, c.dice[0]);
-      setDieFace(die2, c.dice[1]);
-    }
-    diceMsg.textContent = diceResultText(v);
+    setDieFace(die1, dice[0]);
+    setDieFace(die2, dice[1]);
+    diceMsg.textContent = landMsg(dice);
   }, tumbleMs);
-  diceAnim.t3 = setTimeout(() => clearDiceOverlay(), dur + 550);
+  if (hideMs !== undefined) {
+    diceAnim.t3 = setTimeout(() => clearDiceOverlay(), hideMs);
+  }
+}
+
+/** 播放一次仪式掷骰动画（同一 rollAt 只播一次；时长取服务端窗口） */
+function playDice(v: GameView): void {
+  const c = v.ceremony;
+  if (!c || c.state !== 'rolling' || c.rollAt === null || c.until === null) return;
+  const dur = Math.max(400, c.until - c.rollAt);
+  const tumbleMs = Math.min(c.kind === 'gang' ? 1500 : 2200, Math.floor(dur * 0.5));
+  runDiceAnim(
+    c.dice ?? [1, 1],
+    c.rollAt,
+    c.kind === 'deal' ? '庄家掷骰…' : c.kind === 'jing' ? '翻精掷骰…' : '杠后掷骰…',
+    () => diceResultText(v),
+    tumbleMs,
+    dur + 550,
+  );
 }
 
 // ---------- 仪式时钟（服务端窗口 → 本地演出时间轴） ----------
@@ -1696,6 +1789,7 @@ function exitHome(sendLeave: boolean): void {
   feedEl.textContent = '';
   chatHistory = [];
   chatLogEl.textContent = '';
+  logListEl.textContent = '';
   clearChatUnread();
   allReadyEl.classList.add('hidden');
   connBanner.classList.add('hidden');

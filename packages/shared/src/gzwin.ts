@@ -6,8 +6,9 @@
  *      三类（明面正精 / 隐藏正精 / 副精）**都不能**当「精」凑牌型；隐藏正精即使被摸到，
  *      也只能按正精计分。本文件的分解函数 `gzDecompose` 连 wild 参数都没有，
  *      **结构上就不可能拿精凑牌**——新增任何通配能力都必须先改 `gzIsWildcard`。
- *   2. **乱风**（§四）——任意 3 张不重复字牌成一组，字牌之间可以相吃；
- *   3. **有精胡牌受限**（§6.5）——手上有精只能：精吊（精作将）/ 特殊牌型 /
+ *   2. **乱风**（§四）——**风、箭各自成组**：东南西北任意 3 张不同风成一组、中发白任意 3 张不同箭
+ *      成一组，**风箭不可混**（东+南 可吃 西、不可吃 中）；字牌之间可以相吃；
+ *   3. **有精胡牌受限**（§6.5）——手上有精只能：精吊（精牌作将，可配任意一张牌）/ 特殊牌型 /
  *      精归位后无精走德国；**不得平胡**（杠开豁免除外）；
  *   4. **德国 = 手上无精**（§6.4），德中德 = 德国 + 大牌型（×4）。
  */
@@ -29,7 +30,7 @@ export interface GzWinFacts {
   qixing: boolean;
   /** 手上有精牌（暗牌，含胡进那张；§6.5） */
   hasJing: boolean;
-  /** 精吊：精牌作将牌（平胡 / 大七对型）或七对含精对（§6.5，+5 分） */
+  /** 精吊：精牌作将牌——将牌 = 1 张精 + 任意 1 张牌（平胡 / 大七对型），或七对含精对（§6.5，+5 分） */
   jingdiao: boolean;
   /** 德国：手上无精（§6.4，+8 分） */
   german: boolean;
@@ -42,6 +43,9 @@ export interface GzWinFacts {
 /**
  * 为锚定在 k 的 g 个「字牌组」选取 2g 张后继字牌（每种至多 g 张——保证能两两配成
  * 牌面互异的组）；枚举所有可行选取并逐个尝试后续分解。成功返回 true（counts 已扣减）。
+ *
+ * 乱风口径（§四）：`windsDragons` 时同组须**同类别**——锚定在风牌（27-30）只能选风牌，
+ * 锚定在箭牌（31-33）只能选箭牌；`any3` 时可选任意后继字牌。
  */
 function takeGroupTiles(
   counts: number[],
@@ -52,7 +56,8 @@ function takeGroupTiles(
   allowSeq: boolean,
 ): boolean {
   const later: number[] = [];
-  for (let j = k + 1; j < 34; j++) if (counts[j] > 0) later.push(j);
+  const hi = GZ_CONFIG.honorGroup === 'windsDragons' && k < 31 ? 30 : 33;
+  for (let j = k + 1; j <= hi; j++) if (counts[j] > 0) later.push(j);
   const rec = (idx: number, left: number): boolean => {
     if (idx === later.length) {
       return left === 0 && decompStep(counts, k + 1, setsLeft - g, pairLeft, allowSeq);
@@ -81,7 +86,7 @@ function decompStep(
   if (c === 0) return decompStep(counts, k + 1, setsLeft, pairLeft, allowSeq);
 
   if (k >= 27) {
-    // 字牌：刻子 / 对子 / 任意 3 张不同字牌的组（组锚定在组内最小牌，§四）
+    // 字牌：刻子 / 对子 / 同类别 3 张不同字牌的组（组锚定在组内最小牌，§四）
     for (let t = 0; 3 * t <= c; t++) {
       for (let p = 0; p <= 1; p++) {
         if (p === 1 && (!pairLeft || c - 3 * t < 2)) continue;
@@ -135,7 +140,8 @@ export function gzDecompose(counts: number[], needSets: number, needPair: boolea
 
 /**
  * 吃的组合：返回手牌中用到的两张牌。
- * 数牌：同花色夹张 / 边张；字牌：**任意 2 种不同字牌** + 打出张 = 3 张不重复成组。
+ * 数牌：同花色夹张 / 边张；字牌（乱风，§四）：**同类别**内任意 2 种不同字牌 + 打出张 = 3 张不同成组
+ * （风牌组只吃风：东+南 吃 西；箭牌组只吃箭：中+发 吃 白；**风箭不可混**，东+南 不能吃 中）。
  */
 export function gzChiOptions(hand: Tile[], discard: Tile): Tile[][] {
   const res: Tile[][] = [];
@@ -154,9 +160,12 @@ export function gzChiOptions(hand: Tile[], discard: Tile): Tile[][] {
     }
     return res;
   }
-  // 乱风：手里任意 2 种不同字牌即可与打出的字牌成组（东+南 吃西、东+中 吃南 均算）
+  // 乱风：手里同类别（风 27-30 / 箭 31-33）任意 2 种不同字牌即可与打出的字牌成组
+  const sameKind = GZ_CONFIG.honorGroup === 'windsDragons';
+  const lo = sameKind && discard >= 31 ? 31 : 27;
+  const hi = sameKind && discard < 31 ? 30 : 33;
   const others: Tile[] = [];
-  for (let t = 27; t < 34; t++) if (t !== discard && c[t] > 0) others.push(t);
+  for (let t = lo; t <= hi; t++) if (t !== discard && c[t] > 0) others.push(t);
   for (let i = 0; i < others.length; i++) {
     for (let j = i + 1; j < others.length; j++) res.push([others[i], others[j]]);
   }
@@ -165,9 +174,12 @@ export function gzChiOptions(hand: Tile[], discard: Tile): Tile[][] {
 
 // ---------- 胡牌分析 ----------
 
-/** 精牌牌面去重（精吊判定用） */
+/** 精牌牌面去重（精吊判定用）——只含明面正精和它对应的副精 */
 function jingKinds(j: GzJing): Tile[] {
-  return [...new Set(gzJingSlots(j).map((s) => s.tile))];
+  const out: Tile[] = [];
+  if (j.zheng[0] !== undefined) out.push(j.zheng[0]);
+  if (j.fu[0] !== undefined) out.push(j.fu[0]);
+  return [...new Set(out)];
 }
 
 /**
@@ -197,32 +209,43 @@ export function gzAnalyzeWin(concealed: Tile[], melds: Meld[], jing: GzJing, gan
   if (sls) shapes.push('shisanlan');
 
   // 有精 / 无精（§6.5）：只看暗牌——副露里的精牌视为已「归位」。
-  // 三类精牌一视同仁：明面正精、隐藏正精、副精都算「有精」（都按牌面计分、都触发受限）。
-  const hasJing = concealed.some((t) => gzJingPointsOf(t, jing) > 0);
+  // **只有明面正精（zheng[0]）和它对应的副精（fu[0]）算「有精」**；
+  // 隐藏正精（zheng[1..5]）和隐藏副精（fu[1..5]）不显示、不算做精使用，只记分。
+  const hasJing = concealed.some((t) => t === jing.zheng[0] || t === jing.fu[0]);
 
-  // 精吊：精牌作将牌（平胡 / 大七对），或七对含精对（七对中精牌必成精对）
-  let jingdiao = false;
-  if (hasJing) {
-    if (small7) jingdiao = true;
-    if (!jingdiao && setsNeeded >= 0) {
-      for (const kind of jingKinds(jing)) {
-        if (counts[kind] < 2) continue;
-        counts[kind] -= 2;
-        const ok =
-          gzDecompose(counts, setsNeeded, false, true) || (noChi && gzDecompose(counts, setsNeeded, false, false));
-        counts[kind] += 2;
-        if (ok) {
-          jingdiao = true;
-          break;
+  // 精吊（§6.5 + 确认口径）：精牌作将牌——将牌 = 1 张精 + **任意 1 张牌**（不要求两张同种精），
+  // 其余暗牌凑满 4 组面子（顺子 / 刻子 / 乱风组）；七对含精对也算精吊。
+  // 分解全为刻子且无吃牌副露（大七对型）记 jingdiaoTrips、含顺子型记 jingdiaoRuns——计底分用。
+  let jingdiaoRuns = false;
+  let jingdiaoTrips = false;
+  if (hasJing && !small7 && setsNeeded >= 0) {
+    outer: for (const kind of jingKinds(jing)) {
+      if (counts[kind] < 1) continue;
+      counts[kind] -= 1;
+      for (let partner = 0; partner < 34; partner++) {
+        if (counts[partner] < 1) continue;
+        counts[partner] -= 1;
+        if (gzDecompose(counts, setsNeeded, false, true)) {
+          jingdiaoRuns = true;
+          if (!jingdiaoTrips && noChi && gzDecompose(counts, setsNeeded, false, false)) jingdiaoTrips = true;
+        }
+        counts[partner] += 1;
+        if (jingdiaoTrips) {
+          counts[kind] += 1;
+          break outer;
         }
       }
+      counts[kind] += 1;
     }
   }
+  const jingdiao = hasJing && (small7 || jingdiaoRuns || jingdiaoTrips);
+  if (jingdiaoTrips && !shapes.includes('big7')) shapes.push('big7');
+  if (jingdiaoRuns && !shapes.includes('pinghu')) shapes.push('pinghu');
 
   // 合法性（§6.5 有精胡牌限制）
   let valid: boolean;
   if (!hasJing) valid = shapes.length > 0;
-  else if (jingdiao && (pinghu || big7)) valid = true;
+  else if (jingdiao) valid = true;
   else if (small7 || big7 || sls) valid = true;
   else valid = gankai && pinghu; // 杠开平胡豁免
 
@@ -234,12 +257,12 @@ export function gzAnalyzeWin(concealed: Tile[], melds: Meld[], jing: GzJing, gan
     qixing = [27, 28, 29, 30, 31, 32, 33].every((w) => eff.has(w));
   }
 
-  // 底分（多牌型并存取最高）
+  // 底分（多牌型并存取最高；精吊按分解类型取平胡 / 大七对底分）
   let patternBase = 0;
   if (qixing) patternBase = GZ_CONFIG.patternBase.qixing;
-  else if (big7) patternBase = GZ_CONFIG.patternBase.big7;
+  else if (big7 || jingdiaoTrips) patternBase = GZ_CONFIG.patternBase.big7;
   else if (small7 || sls) patternBase = Math.max(GZ_CONFIG.patternBase.small7, GZ_CONFIG.patternBase.shisanlan);
-  else if (pinghu) patternBase = GZ_CONFIG.patternBase.pinghu;
+  else if (pinghu || jingdiaoRuns) patternBase = GZ_CONFIG.patternBase.pinghu;
 
   const german = !hasJing; // 德国 = 手上无精（§6.4）
   // 德中德需看其余三家有没有精牌——胡型分析拿不到别家信息，由引擎判定（见 gzIsDezhongde）
@@ -250,12 +273,14 @@ export function gzAnalyzeWin(concealed: Tile[], melds: Meld[], jing: GzJing, gan
 /**
  * 德中德（§6.4 + 确认口径）：**德国成立 + 任意胡牌牌型（含平胡）+ 其余三家一张精牌都没有** → 胡牌分 ×4。
  * 「没有精牌」按物理持有算（手牌 + 副露 + 牌河——打出无人碰的精仍算他的）。
+ * **只算明面正精（zheng[0]）和它对应的副精（fu[0]）**；隐藏正精/副精不算做精使用。
  * @param german 赢家是否德国（暗牌无精）
  * @param othersHoldings 其余三家的全部持有（手牌 + 副露 + 牌河）
  */
 export function gzIsDezhongde(german: boolean, othersHoldings: Tile[][], jing: GzJing): boolean {
   if (!german) return false;
-  return othersHoldings.every((tiles) => tiles.every((t) => gzJingPointsOf(t, jing) === 0));
+  const jingTiles = new Set<number>([jing.zheng[0], jing.fu[0]]);
+  return othersHoldings.every((tiles) => tiles.every((t) => !jingTiles.has(t)));
 }
 
 /** 胡牌 / 自摸按钮与结果文案的牌型名（普通平胡返回 '平胡'） */

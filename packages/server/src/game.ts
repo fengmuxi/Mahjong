@@ -2,6 +2,8 @@ import type {
   CeremonyInfo,
   ClaimKind,
   ClaimOption,
+  GameActionKind,
+  GameActionLog,
   GameView,
   Meld,
   SelfGangOption,
@@ -26,7 +28,7 @@ import {
 import { buildRecipe, RING_COLS, RING_SLOTS, WallRing, type DealRecipe } from '../../shared/src/wall.ts';
 import { getRules, nanchangRules, type RuleSet } from '../../shared/src/rules/index.ts';
 import { GZ_CONFIG } from '../../shared/src/rules/gzconfig.ts';
-import { gzIsJing, gzJingFu, gzJingPublicTiles, type GzJing } from '../../shared/src/gzjing.ts';
+import { gzJingFu, gzJingPublicTiles, type GzJing } from '../../shared/src/gzjing.ts';
 import { gzAnalyzeWin, gzIsDezhongde, gzWinLabel, type GzWinFacts } from '../../shared/src/gzwin.ts';
 import { gzSettle, type GzSettleOutcome } from '../../shared/src/gzscore.ts';
 
@@ -162,6 +164,9 @@ export class Game {
   private lastDrawn: Tile | null = null;
   private gangDrawJustNow = false;
   private totalDiscards = 0;
+  /** 本局操作记录（出牌 / 吃 / 碰 / 杠 / 胡 / 流局） */
+  private actionLog: GameActionLog[] = [];
+  private logSeq = 0;
   private rng: () => number;
   private throwDice: boolean;
   private ceremony: boolean;
@@ -534,6 +539,8 @@ export class Game {
       gz: this.gzJingView(),
       winner: this.phase === 'over' ? this.winnerSeat : null,
       result: this.result,
+      log: [...this.actionLog],
+      lastAction: this.actionLog.length > 0 ? this.actionLog[this.actionLog.length - 1] : null,
     };
   }
 
@@ -629,6 +636,7 @@ export class Game {
       }
     }
     const events: GameEvent[] = [{ kind: 'discard', seat, tile }];
+    this.pushLog('discard', seat, [tile]);
 
     // 并行响应：所有能操作的人同时拿到全部选项，一个15秒窗口内应答
     const options = new Map<number, ClaimOption[]>();
@@ -781,6 +789,7 @@ export class Game {
         }
       }
       this.logGang(p.robKong.seat, p.tile, false);
+      this.pushLog('bugang', p.robKong.seat, [p.tile, p.tile, p.tile, p.tile]);
       return this.drawReplacement();
     }
 
@@ -809,10 +818,9 @@ export class Game {
     }
     // 赣州：打出精牌被吃 / 碰 / 杠 → 打出者全包（§5.6 + 确认口径）；
     // 全包范围 = 该次的杠分 + 进副露这整组牌的精分（不进交叉结算）。
-    // 注：这里认的是「是不是精位指向的牌面」（明面 / 隐藏正精 + 副精都算），
-    // 与「能不能当万能牌」无关——三类精牌都不能当精凑牌型（§3.6，见 gzIsWildcard）。
+    // 注：这里认的是「明面正精 / 明面副精」——隐藏正精不算做精使用，不触发全包。
     const packed =
-      this.gz && this.gzJing !== null && gzIsJing(tile, this.gzJing)
+      this.gz && this.gzJing !== null && (tile === this.gzJing.zheng[0] || tile === this.gzJing.fu[0])
         ? {
             discarder: from,
             claimer: seat,
@@ -837,6 +845,7 @@ export class Game {
       this.turn = seat;
       this.justDrew = false;
       events.push({ kind: 'peng', seat, tile });
+      this.pushLog('peng', seat, [tile, tile, tile]);
     } else if (ask.kind === 'gang') {
       this.pull(hand, tile, 3);
       // 报杠（§8.5）：声明者的预填杠执行后撤销声明（自摸路径的撤销见 autoGangDeclared）
@@ -846,6 +855,7 @@ export class Game {
       this.melds[seat].push({ type: 'gang', tiles: [tile, tile, tile, tile], from });
       this.turn = seat;
       events.push({ kind: 'gang', seat, tile });
+      this.pushLog('gang', seat, [tile, tile, tile, tile]);
       this.logGang(seat, tile, packed !== null);
       events.push(...this.drawReplacement());
     } else {
@@ -860,6 +870,7 @@ export class Game {
       this.turn = seat;
       this.justDrew = false;
       events.push({ kind: 'chi', seat, tile });
+      this.pushLog('chi', seat, sortTiles([tile, use[0], use[1]]));
     }
     return events;
   }
@@ -877,6 +888,7 @@ export class Game {
       this.pull(hand, tile, 4);
       this.melds[seat].push({ type: 'angang', tiles: [tile, tile, tile, tile], from: seat });
       const events: GameEvent[] = [{ kind: 'gang', seat, tile }];
+      this.pushLog('angang', seat, [tile, tile, tile, tile]);
       this.logGang(seat, tile, false);
       events.push(...this.drawReplacement());
       return events;
@@ -889,6 +901,7 @@ export class Game {
     // 允许抢杠胡的玩法（赣州，§6.2）：先开窗口等其余三家，无人抢再补牌
     if (this.rules.actions.robbingKong) return this.openRobWindow(seat, tile);
     const events: GameEvent[] = [{ kind: 'gang', seat, tile }];
+    this.pushLog('bugang', seat, [tile, tile, tile, tile]);
     this.logGang(seat, tile, false);
     events.push(...this.drawReplacement());
     return events;
@@ -907,6 +920,7 @@ export class Game {
       }
     }
     if (awaiting.length === 0) {
+      this.pushLog('bugang', seat, [tile, tile, tile, tile]);
       this.logGang(seat, tile, false);
       return this.drawReplacement();
     }
@@ -940,6 +954,12 @@ export class Game {
       return;
     }
     this.logGangJing(seat, tile);
+  }
+
+  /** 追加一条操作日志（上限 500 条，超出丢最旧） */
+  private pushLog(kind: GameActionKind, seat: number, tiles: Tile[], note?: string): void {
+    this.actionLog.push({ seq: ++this.logSeq, kind, seat, tiles, note });
+    if (this.actionLog.length > 500) this.actionLog.shift();
   }
 
   /** 杠的牌是正精/副精 → 记入结算 */
@@ -1350,12 +1370,19 @@ export class Game {
     if (info.tiandi === 'di') labels.push(this.gz ? '地和' : '地胡');
     if (info.gankai) labels.push('杠开');
     this.result = `${info.via === 'zimo' ? '自摸' : '胡牌'}（${labels.join(' · ')}）`;
+    this.pushLog(
+      'hu',
+      info.seat,
+      info.tile !== null ? [info.tile] : [],
+      info.via === 'zimo' ? '自摸' : '点炮',
+    );
   }
 
   private over(): GameEvent[] {
     this.phase = 'over';
     this.result = '流局（荒庄）';
     this.pending = null;
+    this.pushLog('draw', -1, []);
     return [{ kind: 'over' }];
   }
 
@@ -1365,6 +1392,7 @@ export class Game {
     this.phase = 'over';
     this.result = reason;
     this.pending = null;
+    this.pushLog('draw', -1, [], reason);
     return [{ kind: 'over' }];
   }
 
