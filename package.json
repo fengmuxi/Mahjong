@@ -1,0 +1,21 @@
+{
+  "name": "nanchang-mahjong",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev:server": "tsx watch packages/server/src/index.ts",
+    "dev:client": "vite --config packages/client/vite.config.ts",
+    "build": "vite build --config packages/client/vite.config.ts",
+    "start": "tsx packages/server/src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "ws": "^8.18.0"
+  }
+}
