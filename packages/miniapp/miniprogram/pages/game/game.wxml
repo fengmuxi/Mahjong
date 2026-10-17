@@ -1,0 +1,322 @@
+<view class="page game bg-cloud">
+  <view class="banner" wx:if="{{netShown}}">{{netText}}</view>
+
+  <!-- HUD -->
+  <view class="game-hud">
+    <view class="hud-group">
+      <text class="hud-label">玩法</text>
+      <text class="badge">{{variantLabel}}</text>
+      <text class="hud-sep">|</text>
+      <text class="hud-label">房间</text>
+      <text class="code">{{code}}</text>
+      <text class="hud-sep">|</text>
+      <text class="hud-item">{{wallText}}</text>
+      <text class="hud-item" wx:if="{{jingText}}">{{jingText}}</text>
+    </view>
+    <view class="hud-group">
+      <!--
+        聊天收起态 = HUD 上的圆钮：不占牌桌高度、不会 floating 压画布/手牌条，
+        未读红点跟在后面。展开后面板占右侧一列（流内元素），与画布并排。
+        宽屏侧栏模式（sideCols）聊天恒在右侧常驻列，这个圆钮就不需要了。
+      -->
+      <button class="ghost chat-fab" wx:if="{{chatCollapsed && !sideCols}}" bindtap="onToggleChat">💬<text class="fab-badge" wx:if="{{chatUnread > 0}}">{{chatUnread > 99 ? '99+' : chatUnread}}</text></button>
+      <button class="ghost {{autoOn ? 'on' : ''}}" wx:if="{{autoShown}}" bindtap="onAuto">{{autoOn ? '托管中' : '托管'}}</button>
+      <button class="ghost" bindtap="onEmoteOpen">🎯 互动</button>
+      <button class="danger" wx:if="{{dissolveGameShown}}" bindtap="onAbort">解散对局</button>
+    </view>
+  </view>
+
+  <!--
+    三栏：操作记录（左） | 牌桌画布（中） | 聊天（右）。
+    左右两栏只在「画布之外真有富余宽度」时才出现（fitCanvas 用 #game-main 实测算出
+    sideCols/logW/chatW）：手机横屏 (1.78:1) 画布本来就把宽度吃满，余量为 0 →
+    两栏都不渲染，行为与之前完全一致；宽窗口 (≥2:1) 才把空白利用起来。
+  -->
+  <view class="game-main" id="game-main">
+    <!-- 左：局内操作记录（按时间正序，滚动到底跟随最新一步） -->
+    <view class="side-col log-col" wx:if="{{sideCols && logW > 0}}" style="width: {{logW}}px;">
+      <view class="side-title">操作记录</view>
+      <scroll-view class="side-body" scroll-y scroll-top="{{logScrollTop}}">
+        <view wx:for="{{logRows}}" wx:key="seq" class="log-row">
+          <text class="log-seat">{{item.seatName}}</text>
+          <text class="log-action {{item.actionClass}}">{{item.action}}</text>
+          <text class="log-tiles" wx:if="{{item.tiles}}">{{item.tiles}}</text>
+          <text class="log-note" wx:if="{{item.note}}">{{item.note}}</text>
+        </view>
+      </scroll-view>
+    </view>
+
+    <view class="canvas-wrap" id="canvas-wrap">
+      <canvas
+        id="table"
+        type="2d"
+        class="{{modalOpen ? 'on-modal' : ''}}"
+        style="width: {{canvasW}}px; height: {{canvasH}}px;"
+        bindtap="onCanvasTap"
+      ></canvas>
+    </view>
+
+    <!--
+      右：聊天。宽屏常驻（sideCols）；窄屏仍是「HUD 💬 圆钮 → 展开面板」的旧交互，
+      展开时带「聊天 / 记录」两个页签（记录在窄屏下没有独立栏位）。
+    -->
+    <view
+      class="chat {{sideCols ? 'sided' : ''}}"
+      wx:if="{{sideCols || !chatCollapsed}}"
+      style="{{sideCols && chatW > 0 ? 'width:' + chatW + 'px;' : ''}}"
+    >
+      <view class="chat-bar" wx:if="{{sideCols}}">
+        <text class="side-title-inline">聊天</text>
+        <!-- 侧栏比窄屏面板窄，快捷语/表情钮挪到标题行，把底部输入行让给输入框 + 发送 -->
+        <view class="chat-bar-tools">
+          <button class="chat-ico" data-pop="quick" bindtap="onTogglePop">💬</button>
+          <button class="chat-ico" data-pop="emoji" bindtap="onTogglePop">😊</button>
+        </view>
+      </view>
+      <view class="chat-bar" wx:else>
+        <button class="chat-tab {{chatTab === 'chat' ? 'active' : ''}}" data-tab="chat" bindtap="onChatTab">聊天</button>
+        <button class="chat-tab {{chatTab === 'log' ? 'active' : ''}}" data-tab="log" bindtap="onChatTab">记录</button>
+        <button class="chat-min" bindtap="onToggleChat">—</button>
+      </view>
+
+      <scroll-view class="chat-log" scroll-y scroll-into-view="chat-end" wx:if="{{sideCols || chatTab === 'chat'}}">
+        <view wx:for="{{chatMsgs}}" wx:key="*this" class="chat-msg {{item.self ? 'self' : ''}}">
+          <text class="chat-name">{{item.name}}：</text><text class="chat-text">{{item.text}}</text>
+        </view>
+        <view id="chat-end"></view>
+      </scroll-view>
+
+      <scroll-view class="log-list" scroll-y wx:if="{{!sideCols && chatTab === 'log'}}">
+        <view wx:for="{{logRows}}" wx:key="seq" class="log-row">
+          <text class="log-seat">{{item.seatName}}</text>
+          <text class="log-action {{item.actionClass}}">{{item.action}}</text>
+          <text class="log-tiles" wx:if="{{item.tiles}}">{{item.tiles}}</text>
+          <text class="log-note" wx:if="{{item.note}}">{{item.note}}</text>
+        </view>
+      </scroll-view>
+
+      <!-- 快捷语 / 表情：scroll-view 才能真正滚动（普通 view 的 overflow:scroll 在小程序里不生效） -->
+      <scroll-view class="chat-pop" scroll-y wx:if="{{quickShown}}">
+        <view class="chat-pop-row">
+          <button wx:for="{{quickList}}" wx:key="*this" class="chat-chip" data-text="{{item}}" bindtap="onQuickTap">{{item}}</button>
+        </view>
+      </scroll-view>
+      <scroll-view class="chat-pop" scroll-y wx:if="{{emojiShown}}">
+        <view class="chat-pop-row">
+          <button wx:for="{{emojiList}}" wx:key="*this" class="chat-chip" data-text="{{item}}" bindtap="onEmojiTap">{{item}}</button>
+        </view>
+      </scroll-view>
+
+      <view class="chat-input-row" wx:if="{{sideCols || chatTab === 'chat'}}">
+        <button class="chat-ico" wx:if="{{!sideCols}}" data-pop="quick" bindtap="onTogglePop">💬</button>
+        <button class="chat-ico" wx:if="{{!sideCols}}" data-pop="emoji" bindtap="onTogglePop">😊</button>
+        <input
+          class="chat-input"
+          value="{{chatInput}}"
+          maxlength="{{chatMax}}"
+          placeholder="说点什么…"
+          bindinput="onChatInput"
+          bindconfirm="onSendChat"
+          adjust-position="{{true}}"
+          cursor-spacing="20"
+          confirm-type="send"
+        />
+        <button class="primary chat-send" bindtap="onSendChat">发送</button>
+      </view>
+    </view>
+  </view>
+
+  <!--
+    底部操作区：提示 → 吃碰杠胡 → 手牌，三者**在画布下方流内排布**，不覆盖牌桌。
+    为什么不放画布里盖着（2026-10-17 实测否决）：<canvas type="2d"> 是原生组件，
+    合成层级在所有 DOM 之上，普通 view 会被盖住且点不到，只能用 cover-view；
+    但开发者工具里 cover-view 同样盖不住 canvas —— 实时 DOM 里 board-overlay /
+    cover-view / tile-btn 全部渲染（14 个牌位都在）却完全不可见，整块操作区消失。
+    真机行为未验证、不可依赖，故改为流内：画布仍拿到除操作区以外的全部高度，
+    且三个诉求（棋牌更占屏、手牌居中、提示在手牌上方）都能满足。
+    顺序（自上而下）：错误 → 状态行（右侧可挂「本局结算 ▲」） → 吃碰杠胡 → 手牌。
+    结算态只剩状态行一行，其余高度全给画布（用户报「结算时麻将区域应该放大」）。
+  -->
+  <view class="board-overlay" wx:if="{{!modalOpen}}">
+    <!--
+      状态行**恒占一行**（不再随控件出现/消失增删）：
+      之前用 wx:if 藏起来，控件一出现这行就消失 → 操作区总高变化 → 画布重排跳动
+      （用户报「报杠提示把牌桌往上顶、样式变形」）。
+      错误提示也塞进这一行（占位替换状态文案，而不是另起一行）：
+      它原先是一个独立的 `.g-error` 行，一出现就把操作区顶高一行 —— 线上旧服务端
+      每 10s 回一条「未知消息」，画面就每 10s 抖一次（用户报「未知消息导致布局变化」）。
+      响应倒计时也在这行右侧；结算态再挂「本局结算 ▲」。
+    -->
+    <view class="g-status {{overPhase ? 'over' : ''}}">
+      <text class="g-status-text err" wx:if="{{controlsErrShown}}">⚠ {{controlsErrText}}</text>
+      <text class="g-status-text" wx:else>{{statusText}}</text>
+      <text class="countdown" wx:if="{{countdownShown}}">{{countdownText}}</text>
+      <view class="settle-restore" wx:if="{{settleRestoreShown}}" bindtap="onSettleRestore">本局结算 ▲</view>
+    </view>
+
+    <!--
+      操作区（相对定位）：手牌常驻底层，吃碰杠胡时用半透明遮罩盖在手牌上。
+      结算态（overPhase）整块不渲染 —— 手牌已无意义，腾出的高度留给牌桌放大。
+    -->
+    <view class="tray-stack" wx:if="{{!overPhase}}">
+      <!-- 手牌：吃碰杠胡选择期也显示（不看手牌没法判断该碰还是该胡） -->
+      <scroll-view class="hand-tray {{trayActive ? 'active' : ''}}" scroll-x wx:if="{{trayShown}}">
+        <view class="tray-row">
+          <view
+            wx:for="{{tray}}"
+            wx:key="key"
+            class="tile-btn {{item.drawn ? 'drawn' : ''}} {{item.frozen ? 'frozen' : ''}} {{item.must ? 'must' : ''}} {{item.pi ? 'pi' : ''}} {{item.fu ? 'fu' : ''}}"
+            data-tile="{{item.tile}}"
+            bindtap="onTrayTap"
+          >
+            <!-- 贴图来自主包 tiles/；加载失败（路径不可达等）自动回退文字牌面，功能不中断 -->
+            <image wx:if="{{item.imgOk}}" class="tile-img" src="{{item.img}}" mode="aspectFill" data-tile="{{item.tile}}" binderror="onTileImgError"></image>
+            <text wx:else class="tile-txt">{{item.name}}</text>
+          </view>
+        </view>
+      </scroll-view>
+
+      <!--
+        吃 / 碰 / 杠 / 胡 / 过：**半透明遮罩盖在手牌上**。
+        为什么能盖住：遮罩与手牌都是普通 DOM，DOM 之间互相覆盖不受原生 canvas 限制
+        （canvas 只挡在它自己的矩形上方，这里已在其下方区域）。
+        遮罩用 rgba 让手牌透出来 —— 用户要看牌决定碰还是胡。
+      -->
+      <view class="claim-mask" wx:if="{{controls.length > 0}}">
+        <view class="controls">
+          <button
+            wx:for="{{controls}}"
+            wx:key="text"
+            class="ctrl {{item.ghost ? '' : 'primary'}} {{item.disabled ? 'disabled' : ''}}"
+            disabled="{{item.disabled}}"
+            data-idx="{{index}}"
+            bindtap="onControl"
+          >{{item.text}}</button>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 掷骰覆盖层 -->
+  <view class="layer" wx:if="{{diceShown}}">
+    <view class="dice-box">
+      <view class="dice-row">
+        <view class="die-big">{{die1}}</view>
+        <view class="die-big">{{die2}}</view>
+      </view>
+      <view class="dice-msg">{{diceMsg}}</view>
+    </view>
+  </view>
+
+  <!-- 互动表情面板 -->
+  <view class="layer" wx:if="{{emoteShown}}">
+    <view class="layer-card emote-card">
+      <view class="layer-title">互动表情</view>
+      <view class="layer-text">先点一位玩家，再点一个表情给他；所有玩家都能看到。</view>
+      <view class="emote-targets">
+        <button
+          wx:for="{{emoteTargets}}"
+          wx:key="seat"
+          class="emote-target {{item.active ? 'on' : ''}}"
+          data-seat="{{item.seat}}"
+          bindtap="onEmoteTarget"
+        >{{item.label}}</button>
+      </view>
+      <scroll-view class="emote-grid" scroll-y>
+        <block wx:for="{{emoteGroups}}" wx:key="label">
+          <view class="emote-group {{item.tone}}">{{item.label}}</view>
+          <view class="emote-cells">
+            <button
+              wx:for="{{item.cells}}"
+              wx:for-item="cell"
+              wx:key="id"
+              class="emote-cell {{item.tone}}"
+              data-id="{{cell.id}}"
+              bindtap="onEmoteCell"
+            >
+              <text class="ico">{{cell.icon}}</text><text>{{cell.name}}</text>
+            </button>
+          </view>
+        </block>
+      </scroll-view>
+      <view class="btn-row end">
+        <button bindtap="onEmoteClose">关闭</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 结算面板 -->
+  <view class="layer" wx:if="{{settleShown}}">
+    <view class="layer-card settle-card">
+      <view class="layer-title">{{settleTitle}}</view>
+      <scroll-view class="settle-body" scroll-y scroll-x>
+        <view class="tbl">
+          <view class="tbl-row head">
+            <view class="tbl-cell" wx:for="{{settleHead}}" wx:key="*this">{{item}}</view>
+          </view>
+          <view wx:for="{{settleRows}}" wx:key="*this" class="tbl-row {{item.me ? 'me' : ''}}">
+            <view
+              wx:for="{{item.cells}}"
+              wx:for-item="cell"
+              wx:key="*this"
+              class="tbl-cell {{cell.cls}}"
+            >{{cell.text}}</view>
+          </view>
+        </view>
+        <view wx:for="{{settleNotes}}" wx:key="*this" class="settle-note">{{item}}</view>
+      </scroll-view>
+      <view class="settle-totals">{{settleTotals}}</view>
+      <view class="btn-row end">
+        <button bindtap="onSettleHide">最小化</button>
+        <button class="primary" disabled="{{settleNextDisabled}}" bindtap="onSettleNext">下一局</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 解散对局二次确认：页内浮层，不用 wx.showModal（原生模态框在部分环境下不弹/回调不达，
+       表现是「点了解散毫无反应」且无任何提示；页内浮层与其它确认框同构、可测） -->
+  <view class="layer" wx:if="{{abortAskShown}}">
+    <view class="layer-card">
+      <view class="layer-title">解散对局</view>
+      <view class="layer-text">将强制结束本局并返回准备界面（房间保留，可重新开局；本局不计分）。</view>
+      <view class="btn-row end">
+        <button data-accept="0" bindtap="onAbortConfirm">取消</button>
+        <button class="primary" data-accept="1" bindtap="onAbortConfirm">解散</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 换位请求 -->
+  <view class="layer" wx:if="{{swapAskShown}}">
+    <view class="layer-card">
+      <view class="layer-title">换位请求</view>
+      <view class="layer-text">{{swapAskText}}</view>
+      <view class="btn-row end">
+        <button data-accept="0" bindtap="onSwapRespond">拒绝</button>
+        <button class="primary" data-accept="1" bindtap="onSwapRespond">同意</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 解散：最终积分 -->
+  <view class="layer" wx:if="{{dissolvedShown}}">
+    <view class="layer-card">
+      <view class="layer-title">{{dissolvedTitle}}</view>
+      <view class="tbl">
+        <view class="tbl-row head">
+          <view class="tbl-cell">玩家</view>
+          <view class="tbl-cell">总积分</view>
+        </view>
+        <view wx:for="{{dissolvedRows}}" wx:key="name" class="tbl-row">
+          <view class="tbl-cell">{{item.name}}</view>
+          <view class="tbl-cell total-col {{item.value > 0 ? 'pos' : item.value < 0 ? 'neg' : ''}}">{{item.value > 0 ? '+' : ''}}{{item.value}}</view>
+        </view>
+      </view>
+      <view class="btn-row end">
+        <button class="primary" bindtap="onDissolvedOk">关闭</button>
+      </view>
+    </view>
+  </view>
+
+  <view class="toast" wx:if="{{toastShown}}">{{toastText}}</view>
+</view>

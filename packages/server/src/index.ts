@@ -289,6 +289,13 @@ function onGameOver(room: Room): void {
     clearTimeout(room.autoTimer);
     room.autoTimer = null;
   }
+  // 定庄后那 2.6s 的「等骰子动画再开局」定时器也必须清掉：本局既然已经结束
+  // （含房主主动 abandon），残留的定时器会在phase 回 lobby 后自行 startGame，
+  // 表现为「解散对局后马上又开一局」。
+  if (room.dealerStartTimer) {
+    clearTimeout(room.dealerStartTimer);
+    room.dealerStartTimer = null;
+  }
   clearDiceTimers(room);
   room.deadlineAt = null;
   const g = room.game;
@@ -1522,8 +1529,23 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       }
       return;
     }
-    default:
-      send(ws, { t: 'error', reason: '未知消息' });
+    case 'ping':
+      // 应用级心跳（微信小程序：wx.connectSocket 发不出 ws 级 ping 帧）——
+      // 收到即视为存活，并回一个 pong 供客户端确认链路。见 docs/integration/wechat-miniprogram.md P0
+      lastAlive.set(ws, Date.now());
+      send(ws, { t: 'pong' });
+      return;
+    default: {
+      // 带上消息类型：以前只回「未知消息」，客户端事件流里根本看不出是哪条包。
+      // 每条连接只回一次：新旧版本错配时（例如旧服务端不认识小程序的 10s 应用级心跳
+      // `{t:'ping'}`）会每 10 秒触发一次，既刷屏又把客户端操作区顶得一跳一跳。
+      const raw = msg as unknown as { t?: unknown };
+      if (!unknownMsgWarned.has(ws)) {
+        unknownMsgWarned.add(ws);
+        console.warn(`[ws] 未知消息：${String(raw && raw.t)}（同一连接只提示一次）`);
+        send(ws, { t: 'error', reason: `未知消息：${String(raw && raw.t)}` });
+      }
+    }
   }
 }
 
@@ -1555,6 +1577,8 @@ const wss = new WebSocketServer({ server, path: '/ws' });
  *  只能靠 ping/pong 主动探活；超时未回应就掐断，让人走「掉线托管 + 重连宽限」，
  *  而不是让全桌等一个其实已经不在的人。 */
 const lastAlive = new Map<WebSocket, number>();
+/** 已经提示过「未知消息」的连接（同一连接只提示一次，见 handleMessage 的 default 分支） */
+const unknownMsgWarned = new WeakSet<WebSocket>();
 wss.on('connection', (ws) => {
   lastAlive.set(ws, Date.now());
   ws.on('message', (raw) => {

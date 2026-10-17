@@ -269,7 +269,14 @@ export type ClientMsg =
   /** 房主：移除指定座位的机器人（仅大厅） */
   | { t: 'removeBot'; seat: number }
   /** 托管开关：开启后服务端代你掷骰 / 应答 / 出牌，可随时取消 */
-  | { t: 'setAuto'; auto: boolean };
+  | { t: 'setAuto'; auto: boolean }
+  /**
+   * 应用级心跳（微信小程序专用）。
+   * `wx.connectSocket` 只能发文本/二进制消息，发不了 WebSocket 协议层的 ping 帧，
+   * 因此小程序端用它替代 ws 级 ping/pong：服务端收到即刷新存活时间并回 `{t:'pong'}`。
+   * web 端仍走 ws 级 ping，两条探活路径并存，互不影响。
+   */
+  | { t: 'ping' };
 
 /** 赣州冲关 · 单组精分（§5.2 新口径：12 张精两两配对为 6 组，逐组独立冲关） */
 export interface GzJingComboRow {
@@ -403,4 +410,6 @@ export type ServerMsg =
   | { t: 'chat'; seat: number; name: string; text: string }
   /** 互动表情广播：from 扔给 target（发给**全员**，各端都在 target 的位置播同一段动画） */
   | { t: 'emote'; from: number; target: number; emote: string }
+  /** 应用级心跳应答（见 ClientMsg 的 `ping`） */
+  | { t: 'pong' }
   | { t: 'error'; reason: string };

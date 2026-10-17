@@ -5,3 +5,10 @@ dist/
 .vscode
 .sisyphus
 .workbuddy
+
+# 微信开发者工具的本机私有配置（含本机编译开关，不进版本库）
+packages/miniapp/miniprogram/project.private.config.json
+
+# shared → 小程序 编译临时目录
+.tmp-mp-shared/
+.tmp-mp-verify/

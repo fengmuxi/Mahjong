@@ -51,9 +51,16 @@ docs/
 | [guides/full-audit-2026-10-16.md](guides/full-audit-2026-10-16.md) | 2026-10-16 全面排查与测试报告：问题清单（严重度分级）、修复方案、复测结果 |
 | [../agent.md](../agent.md) | 改动前必读（在仓库根）：项目是什么、技术栈、目录职责、编码约定、**规则改动铁律**、环境变量、验证清单、常见坑 |
 
+## 微信小程序端（`packages/miniapp/`）
+
+与 web 端共用 `packages/shared` 与服务端，两端协议一致、可同桌对战。
+
+- **启动与配置说明（先看这个）**：[packages/miniapp/README.md](packages/miniapp/README.md) —— 导入工程、局域网联调、配置项位置、常见报错。
+- **迁移方案与偏离说明**：[integration/wechat-miniprogram.md](integration/wechat-miniprogram.md)。
+
 ## 开发辅助脚本（`scripts/`）
 
-非测试门禁，用于本地核对：移动端布局/交互（`mobile_shot.mjs`、`mobile_interact.mjs`）、聊天链路（`chat_e2e.mjs`）、背景纹理（`bg_*.mjs`）、图片处理（`clean_bg.py`）。
+非测试门禁，用于本地核对：移动端布局/交互（`mobile_shot.mjs`、`mobile_interact.mjs`）、聊天链路（`chat_e2e.mjs`）、背景纹理（`bg_*.mjs`）、图片处理（`clean_bg.py`）；小程序资源构建（`mp_prepare_assets.mjs`）、shared 编译入小程序（`mp_build_shared.mjs`）。
 
 ## 校验方式
 
@@ -63,6 +70,8 @@ docs/
 npm run typecheck   # tsc --noEmit，必须零报错
 npm run build       # 客户端构建（改协议/渲染层时必跑）
 npm run start       # 起服务端，按规则文档人工验证
+npm run build:mp    # 微信小程序：编译 shared → packages/miniapp/miniprogram/lib/shared
+npm run prepare:mp  # 微信小程序：生成牌面资源（降采样后 ≈0.7MB，入主包 miniprogram/tiles）
 ```
 
 各玩法的**人工验证清单**见对应文档：赣州见 [integration/ganzhou.md](integration/ganzhou.md) §6，南昌见 [rules/nanchang.md](rules/nanchang.md) §10。

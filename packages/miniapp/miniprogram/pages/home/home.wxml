@@ -1,0 +1,124 @@
+<view class="page bg-{{bg}}">
+  <view class="banner" wx:if="{{netShown}}">{{netText}}</view>
+
+  <view class="panel home-card">
+    <!-- 步骤条：按分支重建；已完成的步骤可点击回退（没有锁定态） -->
+    <view class="steps">
+      <view
+        wx:for="{{steps}}"
+        wx:key="id"
+        class="step-item {{item.state}}"
+        data-step="{{item.id}}"
+        bindtap="onStepTap"
+      >
+        <text class="step-dot">{{item.no}}</text>
+        <text class="step-label">{{item.label}}</text>
+      </view>
+    </view>
+
+    <!--
+      主体：横屏（矮视口）时左右分栏 —— 左侧放当前步骤内容，右侧放说明与背景切换，
+      把「宽」用起来，避免竖版堆叠把内容顶出屏幕（三页均强制横屏，见各页 json）。
+    -->
+    <view class="home-body">
+      <view class="home-main">
+        <!-- 第 ① 步：创建 / 加入 -->
+        <view wx:if="{{step === 'mode'}}">
+          <view class="home-head">创建房间，还是加入房间？</view>
+          <view class="mode-cards">
+            <view class="mode-card" data-mode="create" bindtap="onPickMode">
+              <text class="mode-icon">＋</text>
+              <text class="mode-title">创建房间</text>
+              <text class="mode-desc">开一桌新局，把分享卡片发给朋友</text>
+            </view>
+            <view class="mode-card" data-mode="join" bindtap="onPickMode">
+              <text class="mode-icon">→</text>
+              <text class="mode-title">加入房间</text>
+              <text class="mode-desc">输入朋友给的 6 位房间码</text>
+            </view>
+          </view>
+        </view>
+
+        <!-- 第 ② 步：选择玩法（仅创建分支） -->
+        <view wx:if="{{step === 'variant'}}">
+          <view class="home-head">选择麻将玩法</view>
+          <view class="variants">
+            <view
+              wx:for="{{variants}}"
+              wx:key="id"
+              class="variant {{item.id === selectedVariant ? 'active' : ''}}"
+              data-id="{{item.id}}"
+              bindtap="onPickVariant"
+            >
+              <view class="variant-name">{{item.name}}</view>
+              <view class="variant-desc">{{item.desc}}</view>
+              <view class="variant-tags">
+                <text wx:for="{{item.tags}}" wx:for-item="tag" wx:key="*this">{{tag}}</text>
+              </view>
+            </view>
+          </view>
+          <view class="btn-row end">
+            <button bindtap="onBack">上一步</button>
+            <button class="primary" bindtap="goStepForm">下一步</button>
+          </view>
+        </view>
+
+        <!-- 最后一步：填写信息（表单随分支切换） -->
+        <view wx:if="{{step === 'form'}}">
+          <view class="home-head">{{formHead}}</view>
+          <view class="form-summary">
+            <text wx:for="{{chips}}" wx:key="*this" class="chip">{{item}}</text>
+          </view>
+          <view class="field">
+            <text class="field-label">昵称</text>
+            <input
+              class="field-input"
+              value="{{name}}"
+              maxlength="8"
+              placeholder="1~8 个字"
+              focus="{{focusName}}"
+              bindinput="onNameInput"
+              bindconfirm="onSubmit"
+            />
+          </view>
+          <view class="field" wx:if="{{wizardMode === 'join'}}">
+            <text class="field-label">房间码</text>
+            <input
+              class="field-input code-input"
+              value="{{code}}"
+              maxlength="6"
+              placeholder="6 位房间码"
+              focus="{{focusCode}}"
+              bindinput="onCodeInput"
+              bindconfirm="onSubmit"
+            />
+          </view>
+          <view class="btn-row end">
+            <button bindtap="onBack">上一步</button>
+            <button class="primary" bindtap="onSubmit">{{formSubmit}}</button>
+          </view>
+        </view>
+
+        <view class="error" wx:if="{{errorShown}}">{{errorText}}</view>
+      </view>
+
+      <view class="home-aside">
+        <view class="hint">创建房间时可挑选玩法，加入房间时玩法由房间决定；桌位自动分配东/南/西/北，准备阶段可点其他座位换位。</view>
+        <view class="bg-switch">
+          <text class="bg-switch-label">背景</text>
+          <view class="bg-opts">
+            <button
+              wx:for="{{bgOptions}}"
+              wx:key="id"
+              class="bg-opt {{item.id === bg ? 'on' : ''}}"
+              data-id="{{item.id}}"
+              bindtap="onBgPick"
+            >{{item.label}}</button>
+          </view>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <view class="toast" wx:if="{{toastShown}}">{{toastText}}</view>
+</view>

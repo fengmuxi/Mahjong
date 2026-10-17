@@ -1,0 +1,472 @@
+/*
+ * 浮层定位：与 game 页同一处理 —— app.wxss 的 .layer 是 fixed + inset:0，
+ * 基准是小程序「文档」而非可视区（.page 高 100vh 含导航栏区）→ 卡片不居中。
+ * 改成 absolute + inset:0，基准是本页可视流区。
+ */
+.lobby {
+  position: relative;
+}
+
+.lobby .layer {
+  position: absolute;
+}
+
+.table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+
+.code-line {
+  font-size: 26rpx;
+  color: #9db5a8;
+}
+
+.head-right {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.me {
+  font-size: 24rpx;
+  color: #b9cfc2;
+}
+
+/* 分享房间码：与 .vs-opt 同规格（表头右侧这颗钮没有 .btn-row 兜底，必须自带尺寸） */
+.share-btn {
+  height: 56rpx;
+  line-height: 52rpx;
+  font-size: 22rpx;
+  padding: 0 16rpx;
+}
+
+/* ---------- 主体：默认（高视口）单列；矮视口见底部 @media ---------- */
+.lobby-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.lobby-col {
+  min-width: 0;
+}
+
+.lobby-side {
+  min-width: 0;
+}
+
+.dealer-dice {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  margin-bottom: 12rpx;
+  padding: 12rpx 16rpx;
+  border-radius: 12rpx;
+  background: rgba(230, 193, 75, 0.1);
+  border: 2rpx solid rgba(230, 193, 75, 0.3);
+}
+
+.dealer-dice .dice-msg {
+  flex: 1;
+  font-size: 22rpx;
+  color: #f6e3a1;
+}
+
+/* ---------- 座位 ---------- */
+.seats {
+  display: flex;
+  gap: 12rpx;
+  margin-bottom: 8rpx;
+}
+
+.seat {
+  flex: 1;
+  min-width: 0;
+  padding: 16rpx;
+  border-radius: 12rpx;
+  border: 2rpx solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.seat.ready {
+  border-color: rgba(67, 192, 124, 0.5);
+}
+
+.seat.self {
+  border-color: rgba(230, 193, 75, 0.6);
+}
+
+.seat.swappable:active {
+  background: rgba(230, 193, 75, 0.12);
+}
+
+.seat-no {
+  font-size: 22rpx;
+  color: #9db5a8;
+}
+
+.seat-name {
+  margin-top: 6rpx;
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #e8efe9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.seat-score {
+  font-size: 22rpx;
+  font-weight: 700;
+}
+
+.seat-dr {
+  display: block;
+  font-size: 20rpx;
+  color: #f6e3a1;
+}
+
+.seat-state {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #9db5a8;
+}
+
+.seat-state.offline {
+  color: #e07a6a;
+}
+
+.seat-tip {
+  margin-top: 6rpx;
+  font-size: 20rpx;
+  color: #9db5a8;
+}
+
+.seat-tip.pending {
+  color: #e6c14b;
+}
+
+.seat-tip.ask {
+  color: #f6e3a1;
+}
+
+.seat-kick {
+  margin-top: 8rpx;
+  height: 48rpx;
+  line-height: 44rpx;
+  font-size: 20rpx;
+  padding: 0 16rpx;
+}
+
+.seat-tip-line {
+  font-size: 22rpx;
+  color: #9db5a8;
+  margin-bottom: 12rpx;
+}
+
+/* ---------- 玩法切换 ---------- */
+.variant-switch {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  margin-bottom: 12rpx;
+  flex-wrap: wrap;
+}
+
+.vs-label {
+  font-size: 24rpx;
+  color: #9db5a8;
+}
+
+.vs-opt {
+  height: 56rpx;
+  line-height: 52rpx;
+  font-size: 22rpx;
+  padding: 0 18rpx;
+}
+
+/* ---------- feed ---------- */
+.feed {
+  margin-top: 12rpx;
+  max-height: 240rpx;
+}
+
+.feed-item {
+  font-size: 22rpx;
+  color: #b9cfc2;
+  padding: 4rpx 0;
+}
+
+/* ---------- 掷骰覆盖层 ---------- */
+.dice-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16rpx;
+  padding: 32rpx 48rpx;
+  border-radius: 16rpx;
+  background: rgba(20, 36, 28, 0.96);
+  border: 2rpx solid rgba(230, 193, 75, 0.4);
+}
+
+.dice-row {
+  display: flex;
+  gap: 24rpx;
+}
+
+.die-big {
+  width: 96rpx;
+  height: 96rpx;
+  line-height: 92rpx;
+  text-align: center;
+  border-radius: 16rpx;
+  background: #f7f3e8;
+  color: #1c1c2b;
+  font-size: 48rpx;
+  font-weight: 700;
+}
+
+.dice-msg {
+  font-size: 26rpx;
+  color: #f6e3a1;
+}
+
+.layer-text {
+  font-size: 26rpx;
+  color: #e8efe9;
+  margin-bottom: 20rpx;
+}
+
+.banner.good {
+  background: rgba(67, 192, 124, 0.16);
+  color: #43c07c;
+  padding: 10rpx 16rpx;
+  border-radius: 10rpx;
+  font-size: 24rpx;
+}
+
+.total-col {
+  font-weight: 700;
+}
+
+/*
+ * 矮视口（手机横屏）：px 定尺 + 左右分栏 —— 左侧定庄/座位，右侧玩法切换与事件流，
+ * 底部按钮行常驻一屏内。rpx 随宽度放大，矮宽窗口里会撑爆，故一律换 px。
+ */
+@media (max-height: 680px) {
+  .page {
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .banner {
+    margin-bottom: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+  }
+
+  .table-head {
+    margin-bottom: 6px;
+  }
+
+  .code-line {
+    font-size: 12px;
+  }
+
+  .me {
+    font-size: 11px;
+  }
+
+  .share-btn {
+    height: 26px;
+    line-height: 24px;
+    font-size: 11px;
+    padding: 0 10px;
+  }
+
+  .badge {
+    font-size: 10px;
+    padding: 1px 8px;
+  }
+
+  .lobby-main {
+    flex-direction: row;
+    gap: 10px;
+  }
+
+  .lobby-col {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .lobby-side {
+    width: 300px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+  }
+
+  .dealer-dice {
+    padding: 6px 8px;
+    margin-bottom: 6px;
+    gap: 8px;
+    border-radius: 8px;
+  }
+
+  .dealer-dice .dice-msg {
+    font-size: 11px;
+  }
+
+  .dealer-dice button {
+    height: 28px;
+    line-height: 26px;
+    font-size: 11px;
+    padding: 0 10px;
+  }
+
+  .seats {
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  .seat {
+    padding: 8px;
+    border-radius: 8px;
+  }
+
+  .seat-no {
+    font-size: 11px;
+  }
+
+  .seat-name {
+    font-size: 12px;
+    margin-top: 2px;
+  }
+
+  .seat-score {
+    font-size: 11px;
+  }
+
+  .seat-dr {
+    font-size: 10px;
+  }
+
+  .seat-state {
+    font-size: 11px;
+    margin-top: 2px;
+  }
+
+  .seat-tip {
+    font-size: 10px;
+    margin-top: 2px;
+  }
+
+  .seat-kick {
+    height: 22px;
+    line-height: 20px;
+    font-size: 10px;
+    padding: 0 8px;
+    margin-top: 4px;
+  }
+
+  .seat-tip-line {
+    font-size: 11px;
+    margin-bottom: 6px;
+  }
+
+  .banner.good {
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 8px;
+  }
+
+  .variant-switch {
+    margin-bottom: 0;
+    gap: 6px;
+  }
+
+  .vs-label {
+    font-size: 11px;
+  }
+
+  .vs-opt {
+    height: 26px;
+    line-height: 24px;
+    font-size: 11px;
+    padding: 0 8px;
+  }
+
+  .feed {
+    flex: 1;
+    min-height: 48px;
+    max-height: none;
+    margin-top: 0;
+  }
+
+  .feed-item {
+    font-size: 11px;
+    padding: 1px 0;
+  }
+
+  .btn-row {
+    margin-top: 6px;
+  }
+
+  .btn-row button {
+    height: 30px;
+    line-height: 28px;
+    padding: 0 12px;
+    font-size: 12px;
+  }
+
+  /* 浮层 */
+  .layer-card {
+    width: 88%;
+    padding: 14px 16px;
+  }
+
+  .layer-title {
+    font-size: 15px;
+    margin-bottom: 8px;
+  }
+
+  .layer-text {
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+
+  .tbl-row {
+    font-size: 12px;
+  }
+
+  .tbl-cell {
+    padding: 3px 4px;
+  }
+
+  .dice-box {
+    padding: 14px 20px;
+    gap: 8px;
+  }
+
+  .die-big {
+    width: 44px;
+    height: 44px;
+    line-height: 42px;
+    font-size: 22px;
+    border-radius: 10px;
+  }
+
+  .dice-msg {
+    font-size: 12px;
+  }
+
+  .toast {
+    font-size: 12px;
+    padding: 6px 12px;
+    bottom: 20px;
+  }
+}

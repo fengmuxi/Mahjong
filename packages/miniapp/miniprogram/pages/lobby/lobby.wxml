@@ -1,0 +1,146 @@
+<view class="page lobby bg-cloud">
+  <view class="banner" wx:if="{{netShown}}">{{netText}}</view>
+
+  <view class="table-head">
+    <view class="code-line">房间码 <text class="code">{{code}}</text>
+      <text class="badge" wx:if="{{variantLabel}}">{{variantLabel}}</text>
+    </view>
+    <view class="head-right">
+      <text class="me">{{meText}}</text>
+      <button class="ghost share-btn" bindtap="onShare">分享房间码</button>
+    </view>
+  </view>
+
+  <!--
+    主体：横屏（矮视口）时左右分栏 —— 左侧牌桌（定庄/座位），右侧玩法与事件流，
+    底部按钮行常驻。竖高视口（平板横屏）时退化为单列堆叠。
+  -->
+  <view class="lobby-main">
+    <view class="lobby-col">
+      <!-- 首局定庄：打骰子按钮 -->
+      <view class="dealer-dice" wx:if="{{drShown}}">
+        <view class="dice-msg">首局定庄：四人各掷一次，点数最大者坐庄（并列重掷）</view>
+        <button class="primary" disabled="{{drDisabled}}" bindtap="onRollDealer">{{drText}}</button>
+      </view>
+
+      <view class="seats">
+        <view
+          wx:for="{{seats}}"
+          wx:key="seat"
+          class="seat {{item.empty ? 'empty' : ''}} {{item.ready ? 'ready' : ''}} {{item.self ? 'self' : ''}} {{item.swappable ? 'swappable' : ''}}"
+          data-seat="{{item.seat}}"
+          bindtap="onSeatTap"
+        >
+          <view class="seat-no">{{item.wind}}家<text wx:if="{{item.host}}"> · 房主</text></view>
+          <view class="seat-name">{{item.name}}
+            <text class="seat-score {{item.scoreClass}}" wx:if="{{!item.empty}}"> {{item.score}}</text>
+            <text class="seat-dr" wx:if="{{item.rollText}}"> {{item.rollText}}</text>
+          </view>
+          <view class="seat-state {{item.offline ? 'offline' : ''}}">{{item.state}}</view>
+          <view class="seat-tip {{item.tipClass}}" wx:if="{{item.tip}}">{{item.tip}}</view>
+          <button class="seat-kick" wx:if="{{item.kickable}}" data-seat="{{item.seat}}" catchtap="onRemoveBot">移除</button>
+        </view>
+      </view>
+
+      <view class="seat-tip-line">点其他座位可换位：空位直接换；有人则向对方发起请求，等对方同意。</view>
+
+      <view class="banner good" wx:if="{{allReady}}">4 人已全部准备</view>
+    </view>
+
+    <view class="lobby-side">
+      <!-- 玩法切换（仅房主） -->
+      <view class="variant-switch" wx:if="{{variantSwitchShown}}">
+        <text class="vs-label">玩法</text>
+        <button
+          wx:for="{{variantOpts}}"
+          wx:key="id"
+          class="vs-opt {{item.active ? 'on' : ''}}"
+          disabled="{{item.active}}"
+          data-id="{{item.id}}"
+          bindtap="onPickVariant"
+        >{{item.name}}</button>
+      </view>
+
+      <scroll-view class="feed" scroll-y wx:if="{{feed.length > 0}}">
+        <view wx:for="{{feed}}" wx:key="*this" class="feed-item">{{item}}</view>
+      </scroll-view>
+    </view>
+  </view>
+
+  <view class="btn-row">
+    <button class="primary" bindtap="onToggleReady">{{readyText}}</button>
+    <button wx:if="{{showAddBot}}" bindtap="onAddBot">加机器人</button>
+    <button bindtap="onLeave">离开房间</button>
+    <button class="danger" wx:if="{{showDissolve}}" bindtap="onDissolve">解散牌桌</button>
+  </view>
+
+  <!-- 掷骰覆盖层：翻滚期显示随机点，定格后显示真实点数（点数用大号数字代替 pip，最小实现） -->
+  <view class="layer" wx:if="{{diceShown}}">
+    <view class="dice-box">
+      <view class="dice-row">
+        <view class="die-big">{{die1}}</view>
+        <view class="die-big">{{die2}}</view>
+      </view>
+      <view class="dice-msg">{{diceMsg}}</view>
+    </view>
+  </view>
+
+  <!-- 换位请求（与 web 端一致：没有遮罩点击关闭，只能明确拒绝 / 同意） -->
+  <view class="layer" wx:if="{{swapAskShown}}">
+    <view class="layer-card">
+      <view class="layer-title">换位请求</view>
+      <view class="layer-text">{{swapAskText}}</view>
+      <view class="btn-row end">
+        <button data-accept="0" bindtap="onSwapRespond">拒绝</button>
+        <button class="primary" data-accept="1" bindtap="onSwapRespond">同意</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 解散牌桌二次确认：页内浮层（wx.showModal 原生弹窗在本环境不可靠，见 game 页同款改动） -->
+  <view class="layer" wx:if="{{dissolveAskShown}}">
+    <view class="layer-card">
+      <view class="layer-title">解散牌桌</view>
+      <view class="layer-text">所有玩家将退出房间，并弹出最终积分。此操作不可撤销。</view>
+      <view class="btn-row end">
+        <button data-accept="0" bindtap="onDissolveConfirm">取消</button>
+        <button class="primary" data-accept="1" bindtap="onDissolveConfirm">解散</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 玩法切换确认 -->
+  <view class="layer" wx:if="{{variantConfirmShown}}">
+    <view class="layer-card">
+      <view class="layer-title">切换玩法</view>
+      <view class="layer-text">{{variantConfirmText}}</view>
+      <view class="btn-row end">
+        <button bindtap="onVariantCancel">取消</button>
+        <button bindtap="onVariantKeep">保留积分</button>
+        <button class="primary" bindtap="onVariantClear">清除积分</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 解散：最终积分 -->
+  <view class="layer" wx:if="{{dissolvedShown}}">
+    <view class="layer-card">
+      <view class="layer-title">{{dissolvedTitle}}</view>
+      <view class="tbl">
+        <view class="tbl-row head">
+          <view class="tbl-cell">玩家</view>
+          <view class="tbl-cell">总积分</view>
+        </view>
+        <view wx:for="{{dissolvedRows}}" wx:key="name" class="tbl-row">
+          <view class="tbl-cell">{{item.name}}</view>
+          <view class="tbl-cell total-col {{item.value > 0 ? 'pos' : item.value < 0 ? 'neg' : ''}}">{{item.value > 0 ? '+' : ''}}{{item.value}}</view>
+        </view>
+      </view>
+      <view class="btn-row end">
+        <button class="primary" bindtap="onDissolvedOk">关闭</button>
+      </view>
+    </view>
+  </view>
+
+  <view class="toast" wx:if="{{toastShown}}">{{toastText}}</view>
+</view>

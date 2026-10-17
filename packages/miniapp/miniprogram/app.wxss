@@ -1,0 +1,315 @@
+/**
+ * 全局样式（配色与 web 端 style.css 保持一致：深绿桌布 + 金色强调）
+ * 说明：小程序没有 DOM/CSS 变量作用域，背景纹理按方案 P5 降级为 CSS 渐变
+ * （原 4MB 平铺纹理不进包，观感由渐变近似）。
+ */
+
+page {
+  background: #14241c;
+  color: #e8efe9;
+  font-size: 28rpx;
+  font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+  box-sizing: border-box;
+}
+
+view, text, button, input, scroll-view {
+  box-sizing: border-box;
+}
+
+/* 背景偏好：与 web 端 data-bg 四档一一对应（felt / lattice / cloud / plain） */
+.bg-felt {
+  background: radial-gradient(circle at 50% 30%, #1d4030 0%, #14241c 70%);
+}
+.bg-lattice {
+  background-color: #14241c;
+  background-image: repeating-linear-gradient(
+      45deg,
+      rgba(230, 193, 75, 0.06) 0 12rpx,
+      transparent 12rpx 24rpx
+    ),
+    repeating-linear-gradient(-45deg, rgba(230, 193, 75, 0.06) 0 12rpx, transparent 12rpx 24rpx);
+  background-color: #14241c;
+}
+.bg-cloud {
+  background: radial-gradient(circle at 20% 20%, rgba(230, 193, 75, 0.12), transparent 45%),
+    radial-gradient(circle at 80% 70%, rgba(120, 180, 150, 0.14), transparent 45%), #14241c;
+}
+.bg-plain {
+  background: #14241c;
+}
+
+/* 三页均强制横屏（见各页 json 的 pageOrientation），且 disableScroll 不可滚动 ——
+   页面必须按「一屏装下」设计：高度锁死视口，横向才是我方主场。
+   矮视口（手机横屏）的分栏布局见各页 wxss 的 @media (max-height: 680px)。 */
+.page {
+  height: 100vh;
+  padding: 16rpx 24rpx 24rpx;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel {
+  background: rgba(255, 255, 255, 0.04);
+  border: 2rpx solid rgba(255, 255, 255, 0.08);
+  border-radius: 16rpx;
+  padding: 20rpx 24rpx;
+  margin-bottom: 16rpx;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+
+.title {
+  font-size: 34rpx;
+  font-weight: 700;
+  color: #f6e3a1;
+}
+
+.sub {
+  font-size: 24rpx;
+  color: #9db5a8;
+}
+
+.hint {
+  margin-top: 10rpx;
+  font-size: 24rpx;
+  color: #9db5a8;
+  line-height: 1.5;
+}
+
+.error {
+  margin-top: 10rpx;
+  color: #e07a6a;
+  font-size: 26rpx;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---------- 按钮 ---------- */
+/*
+ * 破微信内置 button 默认样式（基础库 style:v2 注入的 user agent 样式）。
+ * 以下为 libVersion 3.17.4（WeappVendor/3.17.4.wxvpkg）实测原文：
+ *   wx-button{border-radius:4px;font-size:17px;font-weight:700;
+ *             line-height:1.41176471;padding:8px 24px}
+ *   wx-button:not([size=mini]){margin-left:auto;margin-right:auto;width:184px}
+ *   wx-button[type=primary]{background-color:#07c160}
+ *   wx-button[type=default]{background-color:#f2f2f2;color:#06ae56}
+ *   wx-button[disabled]:not([type]),wx-button[disabled][type=default]{
+ *     background-color:#fafafa;color:rgba(0,0,0,.18)}
+ * 注意（2026-10-17 两处实测，推翻旧注释的臆测）：
+ *   ① UA 规则里**没有** min-height:40px、也**没有** border
+ *      （3.17.4 全文件 min-height:40px 出现 0 次）；旧注释按 2.x 基础库
+ *      照抄的写法作废。UA 会给按钮造成麻烦的只有 width:184px 定宽、
+ *      margin 自动居中、以及 [type]/[disabled] 的 background-color/color。
+ *   ② wcsc.exe 实测：类型选择器 button 会被编译改写成 wx-button（page→body），
+ *      所以下面的 button{} 确实作用在内置按钮元素上。UA 的
+ *      wx-button:not([size=mini]) 特异度 (0,1,1) 高于裸类型选择器，
+ *      **且 UA 样式注入在我方 wxss 之后**——只有 width/margin/min-height
+ *      需要 !important；字号、padding、高度、配色我方类选择器都能覆盖。
+ */
+button {
+  /* inline-block + width:auto = 收缩到内容宽（破内置 184px 定宽）；
+     !important 是唯一能压过 button:not([size='mini']) 的手段 */
+  display: inline-block !important;
+  width: auto !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 24rpx;
+  font-size: 28rpx;
+  line-height: 1;
+  color: #e8efe9;
+  background: rgba(255, 255, 255, 0.08);
+  border: 2rpx solid rgba(255, 255, 255, 0.14);
+  border-radius: 10rpx;
+}
+
+button::after {
+  border: none;
+}
+
+button.primary {
+  background: #e6c14b;
+  color: #22200f;
+  font-weight: 700;
+  border-color: #f6e3a1;
+}
+
+button.danger {
+  color: #e07a6a;
+  border-color: rgba(224, 122, 106, 0.5);
+}
+
+button.ghost {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+button.on {
+  background: #e6c14b;
+  color: #22200f;
+  border-color: #f6e3a1;
+}
+
+/* 内置 button[disabled] 的灰底灰字同为高优先级内置样式，会把自定义配色整层盖掉
+   （实测禁用态骰子钮底色 = #f7f7f7 再乘 opacity .45）。disabled 钮必须逐类
+   !important 才能保住配色；opacity .45 这条我方规则照常生效。 */
+button[disabled] {
+  opacity: 0.45;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #e8efe9 !important;
+}
+
+button.ghost[disabled] {
+  background: transparent !important;
+  color: #e8efe9 !important;
+}
+
+button.primary[disabled],
+button.on[disabled] {
+  background: #e6c14b !important;
+  color: #22200f !important;
+}
+
+button.danger[disabled] {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #e07a6a !important;
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+
+/* 靠右对齐的按钮行（浮层底部「取消 / 确定」等）。此前只有 home 页自己定义，
+   game / lobby 上的 `btn-row end` 是空类名 → 按钮全靠左，看起来像「关错了地方」。 */
+.btn-row.end {
+  justify-content: flex-end;
+}
+
+.btn-row button {
+  height: 72rpx;
+  line-height: 68rpx;
+  padding: 0 24rpx;
+}
+
+/* ---------- 通用小块 ---------- */
+.badge {
+  display: inline-block;
+  padding: 4rpx 14rpx;
+  border-radius: 999rpx;
+  background: rgba(230, 193, 75, 0.16);
+  color: #f6e3a1;
+  font-size: 22rpx;
+}
+
+.code {
+  font-weight: 700;
+  letter-spacing: 2rpx;
+  color: #f6e3a1;
+}
+
+.pos {
+  color: #43c07c;
+}
+
+.neg {
+  color: #e07a6a;
+}
+
+.zero {
+  color: #9db5a8;
+}
+
+/* ---------- 浮层（toast / modal） ---------- */
+.layer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.layer-card {
+  width: 80%;
+  max-height: 86vh;
+  background: #16332a;
+  border: 2rpx solid rgba(230, 193, 75, 0.35);
+  border-radius: 16rpx;
+  padding: 28rpx;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.layer-title {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: #f6e3a1;
+  margin-bottom: 16rpx;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 40rpx;
+  transform: translateX(-50%);
+  max-width: 80%;
+  padding: 16rpx 24rpx;
+  background: rgba(20, 36, 28, 0.96);
+  border: 2rpx solid rgba(230, 193, 75, 0.4);
+  border-radius: 12rpx;
+  color: #e8efe9;
+  font-size: 26rpx;
+  z-index: 200;
+}
+
+/* ---------- 表格（结算 / 解散共用） ---------- */
+.tbl {
+  display: flex;
+  flex-direction: column;
+  border: 2rpx solid rgba(255, 255, 255, 0.12);
+  border-radius: 10rpx;
+  overflow: hidden;
+}
+
+.tbl-row {
+  display: flex;
+  font-size: 22rpx;
+}
+
+.tbl-row.head {
+  background: rgba(255, 255, 255, 0.06);
+  color: #9db5a8;
+  font-weight: 700;
+}
+
+.tbl-row.me {
+  background: rgba(230, 193, 75, 0.1);
+}
+
+.tbl-cell {
+  flex: 1;
+  min-width: 0;
+  padding: 8rpx 6rpx;
+  text-align: center;
+  border-top: 2rpx solid rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tbl-row.head .tbl-cell {
+  border-top: none;
+}

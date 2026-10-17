@@ -8,7 +8,9 @@
     "dev:client": "vite --config packages/client/vite.config.ts",
     "build": "vite build --config packages/client/vite.config.ts",
     "start": "tsx packages/server/src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:mp": "node scripts/mp_build_shared.mjs",
+    "prepare:mp": "node scripts/mp_prepare_assets.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",

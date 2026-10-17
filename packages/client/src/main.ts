@@ -809,6 +809,8 @@ function initEmote(): void {
 }
 
 function handle(msg: ServerMsg): void {
+  // 应用级心跳应答（小程序端用）：web 端走 ws 级 ping/pong，这里只需忽略
+  if (msg.t === 'pong') return;
   if (msg.t === 'error') {
     if (!settleEl.classList.contains('hidden')) {
       settleHideBtn.disabled = false;
