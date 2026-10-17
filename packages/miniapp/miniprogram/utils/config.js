@@ -35,4 +35,23 @@ module.exports = {
     }
     return DEFAULT_WSS;
   },
+  /**
+   * 静态资源（牌面 CDN 清单）的接口地址：**由 wss 地址同域名推导**（ws→http、wss→https）。
+   * 例：`wss://majiang.dwzynj.top/ws` → `https://majiang.dwzynj.top`（再拼 `/api/tiles`）。
+   * CDN 是独立域名时，用 `wx.setStorageSync('mj-api', 'https://cdn.example.com')` 覆盖。
+   *
+   * ⚠️ 域名必须在小程序后台登记为 **request 合法域名**（拿清单）与 **downloadFile
+   * 合法域名**（`<image>` 与 canvas `createImage` 下载图片），否则真机一律失败、只显示矢量牌面。
+   */
+  resolveApi() {
+    try {
+      const saved = wx.getStorageSync('mj-api');
+      if (saved) return String(saved).replace(/\/+$/, '');
+    } catch (e) {
+      /* 存储不可用时忽略 */
+    }
+    const m = /^(wss?):\/\/([^/]+)/.exec(String(this.resolve() || ''));
+    if (!m) return '';
+    return (m[1] === 'wss' ? 'https' : 'http') + '://' + m[2];
+  },
 };

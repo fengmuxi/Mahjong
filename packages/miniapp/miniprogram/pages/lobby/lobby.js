@@ -10,12 +10,15 @@ const { VARIANT_LIST, variantName, getRules } = require('../../lib/shared/rules/
 const room = require('../../utils/room.js');
 const net = require('../../utils/net.js');
 const ui = require('../../utils/ui.js');
+const diceUtil = require('../../utils/dice.js');
 
 const FEED_MAX = 200;
 
 Page({
   data: {
     code: '',
+    // 页面切换转场：room.js 跳转前置 true → 根节点 .page-leaving 淡出后再 redirectTo
+    pageLeaving: false,
     variantLabel: '',
     meText: '',
     seats: [],
@@ -37,8 +40,8 @@ Page({
     variantConfirmText: '',
     diceShown: false,
     diceMsg: '',
-    die1: 0,
-    die2: 0,
+    // 两枚骰子：{ idx, rows(3×3 点子网格), tumbling, land }（与对局页共用 utils/dice.js）
+    dice: diceUtil.pair(1, 1, false, false),
     netShown: false,
     netText: '',
     toastShown: false,
@@ -242,16 +245,21 @@ Page({
     if (this.diceKey === key) return;
     this.diceKey = key;
     this.clearDice();
-    this.setData({ diceShown: true, diceMsg: rollingMsg, die1: 1 + Math.floor(Math.random() * 6), die2: 1 + Math.floor(Math.random() * 6) });
+    // 与对局页同一套：九宫格点子 + 翻滚关键帧 + 定格回弹（utils/dice.js + app.wxss）
+    this.setData({
+      diceShown: true,
+      diceMsg: rollingMsg,
+      dice: diceUtil.pair(diceUtil.randFace(), diceUtil.randFace(), true, false),
+    });
     this.scrambleTimer = setInterval(() => {
-      this.setData({ die1: 1 + Math.floor(Math.random() * 6), die2: 1 + Math.floor(Math.random() * 6) });
-    }, 150);
+      this.setData({ dice: diceUtil.pair(diceUtil.randFace(), diceUtil.randFace(), true, false) });
+    }, 100);
     this.landTimer = setTimeout(() => {
       if (this.scrambleTimer) {
         clearInterval(this.scrambleTimer);
         this.scrambleTimer = null;
       }
-      this.setData({ die1: dice[0], die2: dice[1], diceMsg: landMsg });
+      this.setData({ diceMsg: landMsg, dice: diceUtil.pair(dice[0], dice[1], false, true) });
     }, tumbleMs);
     if (hideMs !== undefined) {
       this.hideTimer = setTimeout(() => this.clearDice(), hideMs);
@@ -353,6 +361,12 @@ Page({
   },
 
   onError(reason) {
+    // 「对局进行中」= 服务端已经坐在牌桌上，而人还停在大厅（路由竞态的遗留状态）。
+    // 这是权威信号，直接回牌桌并 resync；否则点多少次都只会再刷一条同样的错误。
+    if (String(reason || '').indexOf('对局进行中') >= 0) {
+      room.recoverGame();
+      return;
+    }
     const feed = [`⚠ ${reason}`].concat(this.data.feed);
     if (feed.length > FEED_MAX) feed.length = FEED_MAX;
     this.setData({ feed });

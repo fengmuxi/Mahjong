@@ -41,21 +41,23 @@ npm run start     # 默认监听 3130，终端会打印「局域网访问: http:
 packages/miniapp/miniprogram/        ← 开发者工具的「项目根」（导入这一层）
 ├── app.json                         页面路由（home / lobby / game）
 ├── app.js                           全局状态（座位、庄家、聊天历史）
-├── app.wxss                         全局样式（含四档背景渐变）
+├── app.wxss                         全局样式（四档背景渐变 + 掷骰覆盖层样式）
 ├── project.config.json              工具生成：AppID、基础库、编译选项
+├── templates/
+│   └── dice.wxml                    掷骰覆盖层模板（对局页 / 大厅页共用）
 ├── utils/
 │   ├── config.js                    ★ 部署地址 DEFAULT_WSS（上线必填）
 │   ├── net.js                       WebSocket 单例 / 退避重连 / 应用级心跳
 │   ├── room.js                      服务端消息路由（state→大厅、game→对局）
 │   ├── store.js                     本地存储键（与 web 端 localStorage 同名）
 │   ├── table.js                     Canvas 2D 牌桌（移植自 client/src/table.ts）
-│   ├── tiles.js                     牌面贴图加载（canvas.createImage）
+│   ├── tileimg.js                   牌面 CDN 资源（后端清单 → 未就绪回退矢量）
+│   ├── dice.js                      骰子点子网格（九宫格 3×3，1、4 为红）
 │   └── ui.js                        toast / confirm
 ├── pages/home/                      分步向导（创建/加入、玩法、昵称）
 ├── pages/lobby/                     房间：座位、换位、准备、机器人、定庄骰
 ├── pages/game/                      对局：画布、控件、手牌条、聊天、结算
-├── lib/shared/                      shared 编译产物（npm run build:mp 生成，勿手改）
-└── tiles/                           34 张牌面贴图（npm run prepare:mp 生成）
+└── lib/shared/                      shared 编译产物（npm run build:mp 生成，勿手改）
 ```
 
 改规则/算分 → 改 `packages/shared/src`，然后 `npm run build:mp`（**不要动 `lib/shared/`**）。
@@ -126,7 +128,6 @@ button:not([size='mini']) { min-height: 40px; width: 184px;
 | 命令 | 作用 | 何时执行 |
 |---|---|---|
 | `npm run build:mp` | 把 `packages/shared` 编译成 CommonJS 产物 → `miniprogram/lib/shared/` | **改过 shared / 协议后必须跑** |
-| `npm run prepare:mp` | 生成牌面贴图 → `miniprogram/tiles/`（4.4MB 原图降采样至 ≈731KB） | 换过牌面美术资源后跑 |
 | `npm run build` | 构建 web 客户端 `packages/client/dist` | 需要用浏览器加入同一房间验证时 |
 | `npm run typecheck` | 全仓类型检查 | 改 shared/server/client 后自检 |
 
@@ -170,8 +171,8 @@ Test-NetConnection 192.168.31.63 -Port 3130    # TcpTestSucceeded : True 才算�
 | 提示「域名未登记」 | 开发期勾「不校验合法域名」；真机/上线必须 wss + 备案域名 + 后台登记 socket 域名 |
 | 提示「连接超时」 | 服务端没起 / IP 变了（`ipconfig` 确认）/ 端口不是 3130 / 防火墙 |
 | 一直「正在重连…」且服务端正常 | 进房后掉线才会这样：检查是否服务端重启过（token 失效 → 会回向导） |
-| 模拟器启动失败，报 `preloadRule … 未找到` | `pages: []` 的纯资源分包不会被注册。**本项目已取消分包**（贴图在主包 `tiles/`），不要再加空 pages 的分包 |
-| 牌面不显示（只剩文字牌） | `miniprogram/tiles/` 缺失 → 跑 `npm run prepare:mp`；单张加载失败会自动回退文字牌面 |
+| 模拟器启动失败，报 `preloadRule … 未找到` | `pages: []` 的纯资源分包不会被注册。**本项目不用分包**，也不要再加空 pages 的分包 |
+| 代码包体检「图片资源 > 200KB / 主包 > 1.5MB」 | 牌面**已改纯矢量绘制**（无任何图片资源），包体约 250KB；不要再往主包塞 PNG 美术资源 |
 | 点牌位置偏 | 画布由 JS 按 `min(容器宽, 容器高×2)` 精确设尺寸并 `wx.nextTick` 后量 rect。**不要在 WXSS 里给 `canvas` 写死宽高或让它被非等比拉伸** |
 | 想清掉自动回桌 | `wx.removeStorageSync('mj-token')` 后重启（等价于 web 端清 localStorage） |
 

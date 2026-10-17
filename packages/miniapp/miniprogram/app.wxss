@@ -46,6 +46,25 @@ view, text, button, input, scroll-view {
   padding: 16rpx 24rpx 24rpx;
   display: flex;
   flex-direction: column;
+  /* 页面切换转场（2026-10-18）：redirectTo 是硬切——旧页瞬间消失、新页瞬间出现，
+     观感是一次跳变闪动。进页 220ms 淡入 + 离页 160ms 淡出（room.js 跳转前先置
+     pageLeaving）把两次硬切缝成一次交叉溶解。动画刻意不带 fill-mode：
+     结束后回到常态，离页的 transition 才能接管 opacity。 */
+  animation: page-fade-in 220ms ease-out;
+}
+
+.page.page-leaving {
+  opacity: 0;
+  transition: opacity 160ms ease-in;
+}
+
+@keyframes page-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .panel {
@@ -260,6 +279,200 @@ button.danger[disabled] {
   margin-bottom: 16rpx;
 }
 
+/*
+ * ---------- 掷骰覆盖层（对局页 / 大厅页共用模板 templates/dice.wxml） ----------
+ *
+ * 2026-10-18 重做：原来只是「白方块 + 一个大数字」，塑料感很强。
+ * 现在对齐 web 端 style.css 的 .die —— 九宫格点子（1、4 为红）+ 渐变立体阴影 +
+ * 翻滚关键帧（旋转 + 上下抛落 + 缩放）+ 独立的地面投影 + 定格回弹。
+ * 两枚骰子错开相位（.die-slot.b），避免同步得像贴图。
+ *
+ * 2026-10-18 二次加厚（用户「还是像平面骰子，加点阴影」）：只靠一圈 inset 阴影是不够的，
+ * 平面方块要读成立体，需要**同时给到三层深度线索**：
+ *   ① 外形：左上高光斑 + 球面径向渐变（左上亮、右下暗）+ 四边 inset 倒角，让朝向先站住；
+ *   ② 侧面：**三段实色硬偏移**（4/6/8rpx，越远越暗）—— 这是骰子块的「厚度」，
+ *      模糊投影只会读成「浮在上面」；
+ *   ③ 落影：贴地紧影 + 大范围软影，挂在 `.die-slot`（不旋转的那层）上。
+ */
+.dice-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16rpx;
+  padding: 28rpx 44rpx;
+  border-radius: 16rpx;
+  background: rgba(20, 36, 28, 0.96);
+  border: 2rpx solid rgba(230, 193, 75, 0.4);
+}
+
+.dice-row {
+  display: flex;
+  gap: 26rpx;
+}
+
+/* 骰子本体与投影分层：投影要独立缩放，做成本体的 box-shadow 不会跟着翻滚动 */
+.die-slot {
+  position: relative;
+  width: 96rpx;
+  height: 96rpx;
+  border-radius: 16rpx;
+  /*
+   * 落影挂在**槽位**上（不跟着 .die 转）：box-shadow 是跟着元素一起旋转的，
+   * 挂在 .die 上的话骰子一转，阴影也跟着绕圈 —— 一眼假。这里固定朝下，
+   * 高度变化交给 .die-shadow 的地面椭圆（抛得越高越小越淡）。
+   */
+  box-shadow:
+    0 6rpx 10rpx rgba(0, 0, 0, 0.38),
+    0 16rpx 28rpx rgba(0, 0, 0, 0.45);
+}
+
+/* 地面投影：中心紧影 + 外围散射，两层叠出「有体积的东西压在桌上」 */
+.die-shadow {
+  position: absolute;
+  left: 4rpx;
+  right: 4rpx;
+  bottom: -12rpx;
+  height: 22rpx;
+  border-radius: 50%;
+  background:
+    radial-gradient(ellipse 48% 100% at center, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0) 72%),
+    radial-gradient(ellipse 100% 100% at center, rgba(0, 0, 0, 0.32), rgba(0, 0, 0, 0) 74%);
+}
+
+.die {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 16rpx;
+  /*
+   * 光从左上来：第一层是左上角的高光斑（镜面反射），第二层是整体球面渐变（左上白、右下暖灰）。
+   * 高光**必须做成 background 层**（而不是 ::after 覆盖层）—— 覆盖层会压在点子上，
+   * 把左上那枚点子（1 点的唯一一枚、4 点的第一枚）洗成灰粉色，实测很明显。
+   */
+  background:
+    radial-gradient(70% 56% at 22% 14%, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0) 60%),
+    radial-gradient(circle at 30% 24%, #fffdf7 0%, #fbf7ef 34%, #eee7d6 68%, #dcd2bc 100%);
+  box-shadow:
+    /* ① 侧面厚度：三段**实色**硬偏移，越远越暗 —— 这就是「块」而不是「片」的来源。
+          用三段而不是两段：台阶更密，视觉上像连续的曲面侧壁，不会读出「叠了两张纸」。
+          落影不在这里：它挂在 .die-slot 上，因为 box-shadow 会跟着本体的旋转一起转。 */
+    4rpx 5rpx 0 rgba(199, 187, 159, 0.98),
+    6rpx 7rpx 0 rgba(184, 172, 144, 0.95),
+    8rpx 10rpx 0 rgba(161, 149, 121, 0.9),
+    /* ② 倒角：底部厚边 + 顶部/左侧高光 + 右侧暗边 */
+    inset 0 -7rpx 0 #cfc5ac,
+    inset 0 3rpx 0 rgba(255, 255, 255, 0.95),
+    inset 3rpx 0 0 rgba(255, 255, 255, 0.5),
+    inset -4rpx 0 0 rgba(196, 185, 160, 0.5);
+  display: flex;
+  flex-direction: column;
+  padding: 10rpx;
+}
+
+.die-grid-row {
+  display: flex;
+  flex: 1;
+}
+
+.pip-cell {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 点子 = 钻孔：内部深色渐变（上暗下略亮）+ inset 阴影 + 下方 1rpx 亮边（孔的边缘反光） */
+.pip {
+  width: 19rpx;
+  height: 19rpx;
+  border-radius: 50%;
+  box-shadow:
+    inset 0 2rpx 3rpx rgba(0, 0, 0, 0.55),
+    inset 0 -1rpx 0 rgba(255, 255, 255, 0.18),
+    0 1rpx 0 rgba(255, 255, 255, 0.55);
+}
+
+.pip.ink {
+  background: radial-gradient(circle at 36% 30%, #3b3b48, #101018 70%);
+}
+
+.pip.red {
+  background: radial-gradient(circle at 36% 30%, #e35555, #9c1616 72%);
+}
+
+.dice-msg {
+  font-size: 24rpx;
+  color: #f6e3a1;
+  text-align: center;
+}
+
+.die.tumbling {
+  animation: dice-tumble 0.42s linear infinite;
+}
+
+.die-shadow.tumbling {
+  animation: dice-shadow 0.42s linear infinite;
+}
+
+/* 第二枚错开半个周期，两枚不同步 */
+.die-slot.b .die.tumbling,
+.die-slot.b .die-shadow.tumbling {
+  animation-delay: -0.17s;
+}
+
+@keyframes dice-tumble {
+  0% {
+    transform: rotate(0deg) translateY(0) scale(1);
+  }
+  25% {
+    transform: rotate(95deg) translateY(-26rpx) scale(1.06);
+  }
+  50% {
+    transform: rotate(185deg) translateY(8rpx) scale(0.95);
+  }
+  75% {
+    transform: rotate(275deg) translateY(-14rpx) scale(1.04);
+  }
+  100% {
+    transform: rotate(360deg) translateY(0) scale(1);
+  }
+}
+
+/* 抛得越高，投影越小越淡 */
+@keyframes dice-shadow {
+  0% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(0.62);
+    opacity: 0.24;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+}
+
+/* 定格回弹：避免「突然停住」的塑料感 */
+.die.land {
+  animation: dice-land 0.36s cubic-bezier(0.2, 0.9, 0.3, 1.5);
+}
+
+@keyframes dice-land {
+  0% {
+    transform: scale(1.14);
+  }
+  55% {
+    transform: scale(0.95);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
 .toast {
   position: fixed;
   left: 50%;
@@ -312,4 +525,66 @@ button.danger[disabled] {
 
 .tbl-row.head .tbl-cell {
   border-top: none;
+}
+
+/*
+ * 紧凑档（手机横屏 ≤680px 高）：掷骰覆盖层也按 px 定尺 ——
+ * rpx 会随屏宽放大，矮宽窗口里骰子会大到离谱（与各页 wxss 的紧凑档同一口径）。
+ */
+@media (max-height: 680px) {
+  .dice-box {
+    padding: 14px 22px;
+    gap: 10px;
+  }
+
+  .dice-row {
+    gap: 20px;
+  }
+
+  .die-slot {
+    width: 50px;
+    height: 50px;
+    border-radius: 10px;
+    box-shadow:
+      0 3px 6px rgba(0, 0, 0, 0.38),
+      0 8px 15px rgba(0, 0, 0, 0.45);
+  }
+
+  .die {
+    border-radius: 10px;
+    padding: 5px;
+    /* 高光在 background 层（压在点子下面），与 rpx 档同一套三层深度 */
+    background:
+      radial-gradient(70% 56% at 22% 14%, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0) 60%),
+      radial-gradient(circle at 30% 24%, #fffdf7 0%, #fbf7ef 34%, #eee7d6 68%, #dcd2bc 100%);
+    box-shadow:
+      2px 3px 0 rgba(199, 187, 159, 0.98),
+      3px 4px 0 rgba(184, 172, 144, 0.95),
+      4px 5px 0 rgba(161, 149, 121, 0.9),
+      inset 0 -4px 0 #cfc5ac,
+      inset 0 2px 0 rgba(255, 255, 255, 0.95),
+      inset 2px 0 0 rgba(255, 255, 255, 0.5),
+      inset -2px 0 0 rgba(196, 185, 160, 0.5);
+  }
+
+  .die-shadow {
+    left: 2px;
+    right: 2px;
+    bottom: -6px;
+    height: 11px;
+  }
+
+  .pip {
+    width: 10px;
+    height: 10px;
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, 0.55),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.18),
+      0 1px 0 rgba(255, 255, 255, 0.55);
+  }
+
+  .dice-msg {
+    font-size: 12px;
+    max-width: 86vw;
+  }
 }

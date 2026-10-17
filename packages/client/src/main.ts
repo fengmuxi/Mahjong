@@ -1348,6 +1348,9 @@ function jingList(tiles: number[]): string {
 
 function renderGame(v: GameView): void {
   lastGameView = v;
+  // 结算浮层还开着但服务端已经开下一局 → 收掉。2026-10-18 起「下一局」若全员就绪，
+  // 服务端只发 game、不再广播大厅态（state→game 连发会把小程序端踹回大厅），收浮层靠这里。
+  if (v.phase !== 'over' && !settleEl.classList.contains('hidden')) hideSettle();
   if (v.variant) currentVariant = v.variant;
   curDealer = v.dealer ?? 0; // 风位随庄
   dissolveGameBtn.classList.toggle('hidden', v.hostSeat !== v.mySeat);

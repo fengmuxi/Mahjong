@@ -1,0 +1,31 @@
+<!--
+  掷骰覆盖层模板（对局页 / 大厅页共用，样式在 app.wxss 的「掷骰覆盖层」段）。
+
+  用法：
+    <import src="/templates/dice.wxml" />
+    <template is="dice" data="{{diceShown, diceMsg, dice}}" />
+
+  结构：骰子本体与地面投影是**两层**（投影要跟着翻滚缩放，做成本体的 box-shadow 不会动）；
+  点子走 3×3 宫格（0 空 / 1 黑 / 2 红），由 utils/dice.js 的 dieGrid() 产出。
+  wx:key 用 idx：翻滚期每 ~100ms 就 setData 一次随机面，key 稳定才不会重建节点、
+  把 .die 上的翻滚动画打断（动画挂在 .die 上，节点一重建就会从头播）。
+-->
+<template name="dice">
+  <view class="layer" wx:if="{{diceShown}}">
+    <view class="dice-box">
+      <view class="dice-row">
+        <view class="die-slot {{die.idx === 1 ? 'b' : ''}}" wx:for="{{dice}}" wx:for-item="die" wx:key="idx">
+          <view class="die-shadow {{die.tumbling ? 'tumbling' : ''}}"></view>
+          <view class="die {{die.tumbling ? 'tumbling' : ''}} {{die.land ? 'land' : ''}}">
+            <view class="die-grid-row" wx:for="{{die.rows}}" wx:for-item="row">
+              <view class="pip-cell" wx:for="{{row}}" wx:for-item="cell" wx:key="*this">
+                <view class="pip {{cell === 2 ? 'red' : 'ink'}}" wx:if="{{cell > 0}}"></view>
+              </view>
+            </view>
+          </view>
+        </view>
+      </view>
+      <view class="dice-msg">{{diceMsg}}</view>
+    </view>
+  </view>
+</template>

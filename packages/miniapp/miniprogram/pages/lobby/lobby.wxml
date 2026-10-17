@@ -1,4 +1,7 @@
-<view class="page lobby bg-cloud">
+<!-- 掷骰覆盖层是两页共用的模板（样式在 app.wxss），import 必须在文件顶层 -->
+<import src="/templates/dice.wxml" />
+
+<view class="{{pageLeaving ? 'page-leaving' : ''}} page lobby bg-cloud">
   <view class="banner" wx:if="{{netShown}}">{{netText}}</view>
 
   <view class="table-head">
@@ -74,16 +77,8 @@
     <button class="danger" wx:if="{{showDissolve}}" bindtap="onDissolve">解散牌桌</button>
   </view>
 
-  <!-- 掷骰覆盖层：翻滚期显示随机点，定格后显示真实点数（点数用大号数字代替 pip，最小实现） -->
-  <view class="layer" wx:if="{{diceShown}}">
-    <view class="dice-box">
-      <view class="dice-row">
-        <view class="die-big">{{die1}}</view>
-        <view class="die-big">{{die2}}</view>
-      </view>
-      <view class="dice-msg">{{diceMsg}}</view>
-    </view>
-  </view>
+  <!-- 掷骰覆盖层（与对局页共用模板 templates/dice.wxml；样式在 app.wxss） -->
+  <template is="dice" data="{{diceShown, diceMsg, dice}}" />
 
   <!-- 换位请求（与 web 端一致：没有遮罩点击关闭，只能明确拒绝 / 同意） -->
   <view class="layer" wx:if="{{swapAskShown}}">

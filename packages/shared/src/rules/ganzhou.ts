@@ -59,7 +59,8 @@ export const ganzhouRules: RuleSet = {
   win: {
     analyze: (i) => {
       const jing: GzJing = i.gzJing ?? i.wild.gz ?? { zheng: [], fu: [] };
-      const f = gzAnalyzeWin(i.concealed, i.melds, jing, i.gzGankai ?? false);
+      // 胡牌张：点炮 = literalExtra；自摸路径走引擎直连（gzBuildWin）不经这里
+      const f = gzAnalyzeWin(i.concealed, i.melds, jing, i.gzGankai ?? false, i.literalExtra);
       // 适配 WinAnalysis 形状（german 语义 = 无精德国；额外事实挂在 gz 字段）
       return { valid: f.valid, shapes: f.shapes, german: f.german, gz: f };
     },

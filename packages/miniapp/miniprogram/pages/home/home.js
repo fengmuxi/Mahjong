@@ -27,6 +27,8 @@ const BG_OPTIONS = [
 Page({
   data: {
     step: 'mode',
+    // 页面切换转场：room.js 跳转前置 true → 根节点 .page-leaving 淡出后再 redirectTo
+    pageLeaving: false,
     wizardMode: '',
     steps: [],
     variants: [],

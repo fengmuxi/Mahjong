@@ -1,35 +1,51 @@
 /**
  * 牌桌渲染（`packages/client/src/table.ts` 的小程序移植版）。
  *
- * 移植原则：**绘制与几何逻辑逐行保持不变**，只替换平台相关的四个入口 ——
+ * 移植原则：**绘制与几何逻辑逐行保持不变**，只替换平台相关的三个入口 ——
  *   1. 取上下文：web 用 `canvas.getContext('2d')`，小程序用 canvas 2d 节点的
  *      `canvasNode.getContext('2d')`（节点由页面 wx.createSelectorQuery 取到）；
- *   2. 取图：web 用 `new Image()`，小程序用 `canvasNode.createImage()`（见 utils/tiles.js）；
- *   3. 计时：web 用 `performance.now()`，小程序统一 `Date.now()`；
- *   4. 排帧：web 用全局 `requestAnimationFrame`，小程序优先用 canvas 节点的同名方法。
+ *   2. 计时：web 用 `performance.now()`，小程序统一 `Date.now()`；
+ *   3. 排帧：web 用全局 `requestAnimationFrame`，小程序优先用 canvas 节点的同名方法。
+ * 牌面**优先用 CDN 位图（`utils/tileimg.js`），取不到就矢量绘制**：官方体检要求图片资源
+ * 合计 ≤ 200KB、主包 < 1.5MB，34 张牌面塞不进代码包；矢量兜底保证 CDN/域名没配好时也能玩。
  *
  * 逻辑坐标恒为 1280×640（与 web 端一致），backing store 按 pixelRatio（上限 2x）重建，
  * 每帧 `setTransform` 映射；命中判定由页面把触摸点换算成逻辑坐标后调用 `hitTest()`。
  * 规则相关的取位（牌墙 slotPos / 精牌描边 / 风位 seatWind）全部走 shared 产物，不做二次实现。
+ *
+ * 2026-10-17：**画布内不再常驻自己的手牌带**（原本 52×70 逻辑 → 屏上仅 20×27，比画布下方
+ * DOM 手牌条小一半且点不准）。出牌统一走 DOM 手牌条；画布只在摊牌（reveal）时展示一次
+ * 自己的明牌，见 `drawRevealHand()`。
+ *
+ * 2026-10-18：**对手手牌背整条删除** —— 四条边原来画的是各家手牌背（22~32 逻辑宽），
+ * 牌河被挤在环内只剩 24×32，真机上单张 9×12 完全看不清。现在四条边全部给牌河（46×58），
+ * 副露挪进环内四侧（40×52），手牌张数改由铭牌上的「手牌 N」显示（`drawTag()`）。
  */
 
 const { tileName, seatWind, suitOf, rankOf } = require('../lib/shared/tiles.js');
 const { RING_SLOTS, SEG_LEN, SEG_START } = require('../lib/shared/wall.js');
-const { tileArt } = require('./tiles.js');
+/** 牌面走 CDN（代码包零图片，见 utils/tileimg.js）；未就绪/失败一律回退矢量 */
+const tileimg = require('./tileimg.js');
 
 const W = 1280;
 const H = 640;
-const HAND_W = 52;
-const HAND_H = 70;
-const HAND_PITCH = 56;
-const HAND_Y = 560;
-const RIVER_W = 24;
-const RIVER_H = 32;
-const MELD_W = 32;
-const MELD_H = 42;
-const DRAWN_GAP = 20;
-const DRAWN_RAISE = 14;
-const ANIM_MS = 300;
+/**
+ * 牌张尺寸（2026-10-18 布局重排）。
+ *
+ * 改动前：对手手牌带占了四条边（每条 22~32 逻辑宽），牌河被挤在环内只剩 24×32 ——
+ * 画布逻辑 1280 宽在真机上约 500 CSS px，牌河单张落到屏上只有 9×12，字和花色根本认不出。
+ * 现在：
+ *   · **删掉对手手牌带**（手牌张数改在铭牌上显示），四条边全部让给牌河；
+ *   · 牌河 24×32 → **46×58**，屏上约 18×23（原来的 1.9 倍）；
+ *   · 副露 32×42 → **40×52**，并从环外挪进环内四侧（环外给了牌河）。
+ * 牌河每侧容量：上下 13×2=26，左右 5×8=40 —— 足够一局的最大弃牌数。
+ */
+const RIVER_W = 46;
+const RIVER_H = 58;
+const RIVER_DX = 48;
+const RIVER_DY = 60;
+const MELD_W = 40;
+const MELD_H = 52;
 const WALL_PITCH = 30;
 const WALL_LAYER = 7;
 const WALL_ACROSS = 26;
@@ -77,15 +93,10 @@ class Table {
     this.ctx = ctx;
     this.pixelRatio = Math.min(2, Math.max(1, pixelRatio || 1));
     this.view = null;
-    this.hits = [];
-    this.canDiscard = false;
-    this.anim = null;
-    this.prevDrawn = null;
-    this.prevDrawnX = 0;
-    this.prevHandLen = 0;
     this.lastRendered = null;
     this.rafQueued = false;
-    this.handRect = null;
+    /** 摊牌时各家明牌占的矩形（index = 屏幕槽位，供中奖高亮用）；对局中是全 null */
+    this.revealRects = [null, null, null, null];
     this.dealing = false;
     this.effCounts = [0, 0, 0, 0];
     this.dealAnim = null;
@@ -123,7 +134,8 @@ class Table {
 
   /**
    * 命中判定（页面把触摸点换算成画布逻辑坐标后调用）。
-   * 与 web 端 onClick 的判定顺序完全一致：掷骰按钮 → 铭牌（互动表情入口）→ 手牌。
+   * 2026-10-17 起**只剩掷骰按钮与四角铭牌**：画布内手牌带已移除（见文件头说明），
+   * 出牌统一走画布下方的 DOM 手牌条（42~46px 宽，是画布内牌面的 2 倍以上）。
    */
   hitTest(x, y) {
     if (!this.view) return;
@@ -142,22 +154,12 @@ class Table {
         return;
       }
     }
-    if (!this.canDiscard) return;
-    const padX = (HAND_PITCH - HAND_W) / 2;
-    for (let i = this.hits.length - 1; i >= 0; i--) {
-      const h = this.hits[i];
-      if (x >= h.x - padX && x <= h.x + HAND_W + padX && y >= h.y - 8 && y <= h.y + HAND_H + 8) {
-        this.onDiscard(h.tile);
-        return;
-      }
-    }
   }
 
   render(view) {
     this.view = view;
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     this.lastRendered = view;
-    if (view.drawn !== null && this.anim) this.anim = null;
     if (view.ceremony && view.ceremony.state !== 'wait-roll') this.rollClicked = false;
     this.rollBtn = null;
 
@@ -172,42 +174,30 @@ class Table {
     const deal = this.dealProgress(view);
     this.dealing = deal !== null;
     const effCounts = view.counts.slice();
-    let effMy = view.myTiles;
-    let effDrawn = view.drawn;
     if (deal) {
       effCounts.fill(0);
       const steps = (view.wallRing && view.wallRing.recipe.steps) || [];
       for (let i = 0; i < Math.min(deal.done, steps.length); i++) {
         effCounts[steps[i].seat] += steps[i].slots.length;
       }
-      effMy = view.myTiles.slice(0, effCounts[view.mySeat]);
-      effDrawn = null;
     }
     this.effCounts = effCounts;
-    this.canDiscard =
-      view.phase === 'playing' &&
-      view.turn === view.mySeat &&
-      !view.claimWindow &&
-      !view.claims &&
-      !this.dealing;
-    this.hits = [];
+    this.revealRects = [null, null, null, null];
 
+    const over = view.phase === 'over';
     this.drawTable();
     this.drawWall(view, deal);
-    this.drawRivers(view);
+    // 对局中四条边是牌河；摊牌/流局时同一个位置改画各家明牌（否则两者会叠在一起）。
+    // 对局中**不画任何手牌**（含对手）—— 手牌张数在铭牌上，牌面信息全部让给牌河。
+    if (!over) this.drawRivers(view);
     this.drawCenter(view, deal);
     for (let s = 0; s < 4; s++) {
-      if (view.reveal) {
-        if (this.disp(view, s) !== 0) this.drawRevealHand(view, s);
-      } else {
-        this.drawBacks(view, s);
-      }
-      this.drawMelds(view.melds[s], this.disp(view, s));
+      const slot = this.disp(view, s);
+      if (over) this.drawRevealHand(view, s);
+      this.drawMelds(view.melds[s], slot);
       this.drawTag(view, s);
     }
-    this.drawMyHand(view, effMy, effDrawn);
     if (view.lastDiscard) this.drawLastMarker(view);
-    this.drawTurnCursor(view);
     this.drawJingHighlight(view);
     if (view.phase === 'over') {
       this.drawWinnerHighlight(view);
@@ -448,18 +438,31 @@ class Table {
     }
   }
 
+  /**
+   * 四方牌河的落位。**牌河占四条边**（这里原来是各家手牌背，2026-10-18 已删除 ——
+   * 手牌张数改由铭牌上的「手牌 N」承担，见 `drawTag()`）：
+   *   seat 2 对家 → 顶边：13 列 × 2 行（y 0..118，紧贴牌墙上方 119 的底衬）
+   *   seat 0 自己 → 底边：13 列 × 2 行（y 506..624，牌墙底衬 503 之下）
+   *   seat 3 上家 → 左边：5 列 × 8 行（x 20..258；竖向先往下排，满一列换下一列）
+   *   seat 1 下家 → 右边：同左，镜像（x 1022..1260）
+   * 左右两侧只用 8 行、y 到 548，避开四角铭牌（顶 16..66 / 底 574..624）；
+   * 横向两条只占中间 13 列（x 328..950），同样不压铭牌。
+   * 牌张 46×58（原 24×32，翻倍），行距 60 / 列距 48 —— 2px 缝，够区分又不散。
+   */
   riverOrigin(seat) {
-    if (seat === 0) return { x: 458, y: 398, perRow: 14, dx: RIVER_W + 2 };
-    if (seat === 2) return { x: 537, y: 156, perRow: 8, dx: RIVER_W + 2 };
-    if (seat === 3) return { x: 334, y: 156, perRow: 7, dx: RIVER_W + 2 };
-    return { x: 764, y: 156, perRow: 7, dx: RIVER_W + 2 };
+    if (seat === 2) return { x: 328, y: 0, cols: 13, rows: 2, vertical: false };
+    if (seat === 0) return { x: 328, y: 506, cols: 13, rows: 2, vertical: false };
+    if (seat === 3) return { x: 20, y: 70, cols: 5, rows: 8, vertical: true };
+    return { x: 1022, y: 70, cols: 5, rows: 8, vertical: true };
   }
 
+  /** 第 i 张弃牌的位置（横向按行铺、纵向按列铺） */
   riverPos(seat, i) {
     const o = this.riverOrigin(seat);
-    const col = i % o.perRow;
-    const row = Math.floor(i / o.perRow);
-    return { x: o.x + col * o.dx, y: o.y + row * (RIVER_H + 2) };
+    const per = o.vertical ? o.rows : o.cols;
+    const col = o.vertical ? Math.floor(i / per) : i % per;
+    const row = o.vertical ? i % per : Math.floor(i / per);
+    return { x: o.x + col * RIVER_DX, y: o.y + row * RIVER_DY, w: RIVER_W, h: RIVER_H };
   }
 
   drawRivers(view) {
@@ -468,7 +471,7 @@ class Table {
       const river = view.rivers[s] || [];
       river.forEach((tile, i) => {
         const p = this.riverPos(slot, i);
-        this.drawTile(tile, p.x, p.y, RIVER_W, RIVER_H, view);
+        this.drawTile(tile, p.x, p.y, p.w, p.h, view);
       });
     }
   }
@@ -483,15 +486,26 @@ class Table {
     const ctx = this.ctx;
     ctx.strokeStyle = '#e6c14b';
     ctx.lineWidth = 2;
-    roundRect(ctx, p.x - 2, p.y - 2, RIVER_W + 4, RIVER_H + 4, 4);
+    roundRect(ctx, p.x - 2, p.y - 2, p.w + 4, p.h + 4, 4);
     ctx.stroke();
+    // 弃的是明面精 → 精描边（正精橙 / 副精紫）要在金框**之上**：drawTile 里的精描边先画、
+    // 已被上面的金框盖住，这里补画一次（金框垫底、精框在上），两圈都可见（2026-10-18）。
+    const gz = view.gz;
+    const isPi = gz ? last.tile === gz.zheng[0] : last.tile === view.jingPi;
+    const isFu = gz ? last.tile === gz.fu[0] : last.tile === view.jingFu;
+    if (isPi || isFu) {
+      this.jingBorder(p.x, p.y, p.w, p.h, Math.max(2, Math.floor(p.w * 0.14)), isPi);
+    }
   }
 
   drawCenter(view, deal) {
     const ctx = this.ctx;
-    const px = 530;
+    // 中心信息盘（2026-10-18 放大：220×140 → 288×140，字号 / 骰子 / 精牌同步放大；
+    // 高度不动 —— 上有对家副露（y≤212）、下有自己副露（y≥400），只向两侧扩：
+    // 左副露最宽到 x490、右副露最窄从 x795 起，288 宽正好嵌在中间不重叠）。
+    const px = 496;
     const py = 256;
-    const pw = 220;
+    const pw = 288;
     const ph = 140;
     roundRect(ctx, px, py, pw, ph, 12);
     ctx.fillStyle = 'rgba(0,0,0,0.34)';
@@ -508,29 +522,29 @@ class Table {
       wallLeft = RING_SLOTS - n;
     }
     ctx.fillStyle = '#9db5a8';
-    ctx.font = font(12);
+    ctx.font = font(14);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(`牌墙 ${wallLeft}`, px + 12, py + 14);
+    ctx.fillText(`牌墙 ${wallLeft}`, px + 14, py + 17);
 
     const winds = [
-      { seat: view.mySeat, x: 640, y: py + ph - 12 },
-      { seat: (view.mySeat + 1) % 4, x: px + pw - 22, y: py + 66 },
-      { seat: (view.mySeat + 2) % 4, x: 640, y: py + 14 },
-      { seat: (view.mySeat + 3) % 4, x: px + 22, y: py + 66 },
+      { seat: view.mySeat, x: px + 144, y: py + 125 },
+      { seat: (view.mySeat + 1) % 4, x: px + 272, y: py + 70 },
+      { seat: (view.mySeat + 2) % 4, x: px + 144, y: py + 18 },
+      { seat: (view.mySeat + 3) % 4, x: px + 24, y: py + 70 },
     ];
     ctx.textAlign = 'center';
     for (const w of winds) {
       const isDealer = w.seat === view.dealer;
       if (isDealer) {
-        roundRect(ctx, w.x - 14, w.y - 11, 28, 22, 6);
+        roundRect(ctx, w.x - 17, w.y - 13, 34, 26, 7);
         ctx.fillStyle = '#e6c14b';
         ctx.fill();
         ctx.fillStyle = '#22200f';
-        ctx.font = font(15, true);
+        ctx.font = font(18, true);
       } else {
         ctx.fillStyle = '#b9cfc2';
-        ctx.font = font(14);
+        ctx.font = font(17);
       }
       ctx.fillText(this.wind(w.seat), w.x, w.y + 1);
     }
@@ -542,28 +556,28 @@ class Table {
     } else if (!(c && c.state === 'wait-roll' && c.kind === 'deal')) {
       shown = view.lastDice || view.dealDice;
     }
-    this.drawDieFace(603, 292, 32, shown ? shown[0] : null);
-    this.drawDieFace(645, 292, 32, shown ? shown[1] : null);
+    this.drawDieFace(px + 54, py + 40, 44, shown ? shown[0] : null);
+    this.drawDieFace(px + 104, py + 40, 44, shown ? shown[1] : null);
 
     if (view.gz) {
       const gzVis = view.gz.zheng.length > 0 && !(view.ceremony && view.ceremony.kind === 'jing' && !this.revealed(view));
       if (gzVis) {
         const hasFu = view.gz.fu.length > 0;
-        this.drawTile(view.gz.zheng[0], 602, 330, 34, 42, view);
-        if (hasFu) this.drawTile(view.gz.fu[0], 644, 330, 34, 42, view);
+        this.drawTile(view.gz.zheng[0], px + 160, py + 36, 46, 58, view);
+        if (hasFu) this.drawTile(view.gz.fu[0], px + 212, py + 36, 46, 58, view);
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = font(10);
+        ctx.font = font(12);
         ctx.fillStyle = '#e0a86a';
-        ctx.fillText('正精', 619, 381);
+        ctx.fillText('正精', px + 183, py + 112);
         if (hasFu) {
           ctx.fillStyle = '#b48ae0';
-          ctx.fillText('副精', 661, 381);
+          ctx.fillText('副精', px + 235, py + 112);
         }
         if (!view.gz.revealed) {
           ctx.font = font(11);
           ctx.fillStyle = '#9db5a8';
-          ctx.fillText('其余 10 张结算揭晓', 640, 400);
+          ctx.fillText('其余 10 张结算揭晓', px + 104, py + 112);
         }
       }
     } else {
@@ -572,20 +586,20 @@ class Table {
         view.jingFu !== null &&
         !(view.ceremony && view.ceremony.kind === 'jing' && !this.revealed(view));
       if (jingOk) {
-        this.drawTile(view.jingPi, 602, 330, 34, 42, view);
-        this.drawTile(view.jingFu, 644, 330, 34, 42, view);
+        this.drawTile(view.jingPi, px + 160, py + 36, 46, 58, view);
+        this.drawTile(view.jingFu, px + 212, py + 36, 46, 58, view);
       }
     }
 
     if (c && c.state === 'wait-roll' && !this.rollClicked) {
       const label = c.kind === 'deal' ? '掷骰开局' : c.kind === 'jing' ? '掷骰翻精' : '掷骰补牌';
       const mine = view.mySeat === c.seat;
-      const bx = 570;
-      const by = 286;
-      const bw = 140;
-      const bh = 44;
-      roundRect(ctx, bx, by, bw, bh, 10);
-      ctx.fillStyle = mine ? '#e6c14b' : 'rgba(28,44,36,0.92)';
+      const bx = px + 49;
+      const by = py + 38;
+      const bw = 190;
+      const bh = 60;
+      roundRect(ctx, bx, by, bw, bh, 12);
+      ctx.fillStyle = mine ? '#e6c14b' : 'rgba(28,44,36,0.94)';
       ctx.fill();
       ctx.strokeStyle = mine ? '#f6e3a1' : '#4d675a';
       ctx.lineWidth = 2;
@@ -594,11 +608,11 @@ class Table {
       ctx.textBaseline = 'middle';
       if (mine) {
         ctx.fillStyle = '#22200f';
-        ctx.font = font(17, true);
+        ctx.font = font(22, true);
         ctx.fillText(label, bx + bw / 2, by + bh / 2 + 1);
       } else {
         ctx.fillStyle = '#9db5a8';
-        ctx.font = font(13);
+        ctx.font = font(15);
         ctx.fillText(`等待${this.wind(c.seat)}家${label}…`, bx + bw / 2, by + bh / 2 + 1);
       }
       if (mine) this.rollBtn = { x: bx, y: by, w: bw, h: bh };
@@ -695,102 +709,107 @@ class Table {
     }
   }
 
-  drawBacks(view, seat) {
-    const slot = this.disp(view, seat);
-    const n = this.effCounts[seat];
-    const shown = (view.declared || []).filter((d) => d.seat === seat).map((d) => d.tile);
-    const self = this;
-    const cell = (i, x, y, w, h) => {
-      if (i < shown.length) {
-        self.drawTile(shown[i], x, y, w, h, view);
-        const ctx = self.ctx;
-        ctx.strokeStyle = '#e6c14b';
-        ctx.lineWidth = 2;
-        roundRect(ctx, x - 1, y - 1, w + 2, h + 2, 4);
-        ctx.stroke();
-      } else {
-        self.drawTile(-1, x, y, w, h, view);
-      }
-    };
-    if (slot === 2) {
-      const pitch = 34;
-      const total = n * pitch - 2;
-      let x = (W - total) / 2;
-      for (let i = 0; i < n; i++, x += pitch) cell(i, x, 54, 32, 22);
-    } else if (slot === 3) {
-      let y = 160;
-      for (let i = 0; i < n; i++, y += 32) cell(i, 160, y, 22, 30);
-    } else if (slot === 1) {
-      let y = 160;
-      for (let i = 0; i < n; i++, y += 32) cell(i, 1092, y, 22, 30);
-    }
+  /**
+   * 摊牌时各家明牌的落位（与 riverOrigin 同一套四边；摊牌时牌河不画，整条边都空着）。
+   *   自己/对家：顶/底边各 13 列 × 2 行（14 张刚好两行）
+   *   上家/下家：左右边各 2 列 × 7 行（13~14 张）
+   * 牌张尺寸与牌河一致（RIVER_W/H），摊牌时看得最清楚。
+   */
+  revealOrigin(slot) {
+    if (slot === 2) return { x: 328, y: 0, cols: 13, rows: 2, vertical: false };
+    if (slot === 0) return { x: 328, y: 506, cols: 13, rows: 2, vertical: false };
+    if (slot === 3) return { x: 20, y: 70, cols: 2, rows: 7, vertical: true };
+    return { x: 1166, y: 70, cols: 2, rows: 7, vertical: true };
   }
 
   drawRevealHand(view, seat) {
     const slot = this.disp(view, seat);
-    const tiles = (view.reveal && view.reveal[seat]) || [];
+    // 流局（phase=over 但 reveal=null）时自己那手牌仍要从 myTiles 画出来
+    const tiles = (view.reveal && view.reveal[seat]) || (slot === 0 ? view.myTiles || [] : []);
     if (tiles.length === 0) return;
-    if (slot === 2) {
-      const pitch = 30;
-      const w = 28;
-      const total = tiles.length * pitch - (pitch - w);
-      let x = (W - total) / 2;
-      for (const t of tiles) {
-        this.drawTile(t, x, 54, w, 36, view);
-        x += pitch;
-      }
-    } else if (slot === 3) {
-      let y = 160;
-      for (const t of tiles) {
-        this.drawTile(t, 160, y, 28, 32, view);
-        y += 34;
-      }
-    } else if (slot === 1) {
-      let y = 160;
-      for (const t of tiles) {
-        this.drawTile(t, 1092, y, 28, 32, view);
-        y += 34;
-      }
-    }
+    const z = this.revealOrigin(slot);
+    const per = z.vertical ? z.rows : z.cols;
+    tiles.forEach((t, i) => {
+      const col = z.vertical ? Math.floor(i / per) : i % per;
+      const row = z.vertical ? i % per : Math.floor(i / per);
+      this.drawTile(t, z.x + col * RIVER_DX, z.y + row * RIVER_DY, RIVER_W, RIVER_H, view);
+    });
+    const cols = z.vertical ? Math.ceil(tiles.length / z.rows) : Math.min(tiles.length, z.cols);
+    const rows = z.vertical ? Math.min(tiles.length, z.rows) : Math.ceil(tiles.length / z.cols);
+    this.revealRects[slot] = {
+      // 顶边的明牌从 y=0 起，外扩 5px 会变成负数（赢家高亮被画布上沿切掉）→ 夹到 0
+      x: Math.max(0, z.x - 5),
+      y: Math.max(0, z.y - 5),
+      w: cols * RIVER_DX - (RIVER_DX - RIVER_W) + 10,
+      h: rows * RIVER_DY - (RIVER_DY - RIVER_H) + 10,
+    };
   }
 
   meldWidth(m) {
     return m.tiles.length * MELD_W;
   }
 
+  /**
+   * 副露（吃/碰/杠）落位（2026-10-18 重排）：牌河搬到四条边之后，环内四侧空出来了，
+   * 副露就画在这里，紧挨各自玩家的牌河。
+   *   seat 0 自己 → 环内下沿（y 400，右对齐到 950；牌墙底衬从 503 起，留 51 余量）
+   *   seat 2 对家 → 环内上沿（y 160，右对齐到 950；牌墙顶衬到 159 为止，结算横幅在 214）
+   *   seat 3 上家 → 环内左侧竖排（x 330；左侧牌墙到 281 为止）
+   *   seat 1 下家 → 环内右侧竖排（右对齐到 955；右侧牌墙从 964 起）
+   * 赣州「报杠展示三张」（`view.declared`）是冻结但可见的牌，原来画在手牌带里，
+   * 手牌带删除后接到副露块的末端（横排接左边、竖排接上边），带金框区分。
+   */
   drawMelds(melds, seat) {
-    if (!melds || melds.length === 0) return;
-    if (seat === 0) {
-      const gap = 14;
-      let total = gap * (melds.length - 1);
-      for (const m of melds) total += this.meldWidth(m);
-      let x = 950 - total;
-      for (const m of melds) {
-        x = this.drawMeldRow(m, x, 502);
+    const list = melds || [];
+    const decl = (this.view && this.view.declared ? this.view.declared : [])
+      .filter((d) => d.seat === seat)
+      .map((d) => d.tile);
+    if (list.length === 0 && decl.length === 0) return;
+    const gap = 12;
+
+    if (seat === 0 || seat === 2) {
+      // 横排：右对齐到 950，展示牌接在最左边
+      let total = gap * Math.max(0, list.length - 1);
+      for (const m of list) total += this.meldWidth(m);
+      if (decl.length > 0) total += decl.length * MELD_W + gap;
+      let x = Math.max(292, 950 - total);
+      const y = seat === 0 ? 400 : 160;
+      if (decl.length > 0) {
+        this.drawDeclared(decl, x, y);
+        x += decl.length * MELD_W + gap;
+      }
+      for (const m of list) {
+        x = this.drawMeldRow(m, x, y);
         x += gap;
       }
-    } else if (seat === 2) {
-      const gap = 14;
-      let total = gap * (melds.length - 1);
-      for (const m of melds) total += this.meldWidth(m);
-      let x = 950 - total;
-      for (const m of melds) {
-        x = this.drawMeldRow(m, x, 80);
-        x += gap;
-      }
-    } else if (seat === 3) {
-      let y = 160;
-      for (const m of melds) {
-        this.drawMeldRow(m, 20, y);
-        y += MELD_H + 4;
-      }
-    } else {
-      let y = 160;
-      for (const m of melds) {
-        const w = this.meldWidth(m);
-        this.drawMeldRow(m, 1260 - w, y);
-        y += MELD_H + 4;
-      }
+      return;
+    }
+
+    // 左右两家：竖排。起点 216 是刻意的 —— 对家的横排副露在 160~212，这里从它下面开始，
+    // 两家同时在 4 组副露也不会叠（最多铺到 436，只有「左右 4 组 + 自己 3 组」这种
+    // 极端情况才会在环内下沿擦到 44px，代价可接受）。
+    let y = 216;
+    if (decl.length > 0) {
+      this.drawDeclared(decl, seat === 3 ? 330 : 955 - decl.length * MELD_W, y);
+      y += MELD_H + 4;
+    }
+    for (const m of list) {
+      const w = this.meldWidth(m);
+      this.drawMeldRow(m, seat === 3 ? 330 : 955 - w, y);
+      y += MELD_H + 4;
+    }
+  }
+
+  /** 赣州「报杠展示三张」：冻结不能打、但必须看得见 → 金框摆在副露块末端 */
+  drawDeclared(tiles, x, y) {
+    const ctx = this.ctx;
+    for (const t of tiles) {
+      this.drawTile(t, x, y, MELD_W, MELD_H, this.view);
+      ctx.strokeStyle = '#e6c14b';
+      ctx.lineWidth = 2;
+      roundRect(ctx, x - 1, y - 1, MELD_W + 2, MELD_H + 2, 4);
+      ctx.stroke();
+      x += MELD_W;
     }
   }
 
@@ -803,12 +822,26 @@ class Table {
     return x + m.tiles.length * MELD_W;
   }
 
+  /**
+   * 四角铭牌（2026-10-18 重排 168×50 → 同日再放大 220×54，用户「铭牌字号过小」）。
+   *
+   * 第一行：`庄` + `风位·昵称·我`（左）/ 累计总分（右）。
+   * 第二行：**「手牌 N」**（左，带底衬的胶囊）/ 状态（右：胡牌！/ 托管中 / 出牌中）。
+   *
+   * 为什么张数要写进铭牌：画布里的对手手牌背已经整条删掉（四条边全部让给牌河），
+   * 「还剩几张」必须另有出口。文案固定为「手牌 N」而不是光秃秃的「N 张」——
+   * 牌河现在占四条边，只写张数会被读成弃牌数。数值取 `view.counts`
+   * （服务端 `hands.map(h => h.length)`，摸牌 +1、出牌 -1、碰/杠 -n），每帧跟着状态走。
+   *
+   * 几何预算：高 54（INSET 14 → 占 y14..68 / y572..626），左右牌河从 y70 起 / 到 y548 止，
+   * 上下牌河从 x328 起 —— 四角都不压牌；宽 220 也只伸到 x234 / x1046，同样让开牌河。
+   */
   drawTag(view, seat) {
     const ctx = this.ctx;
     const slot = this.disp(view, seat);
-    const TAG_W = 130;
-    const TAG_H = 40;
-    const INSET = 16;
+    const TAG_W = 220;
+    const TAG_H = 54;
+    const INSET = 14;
     const pos = {
       0: [INSET, H - INSET - TAG_H],
       1: [W - INSET - TAG_W, H - INSET - TAG_H],
@@ -828,56 +861,96 @@ class Table {
     const offline = view.connected !== undefined && !view.connected[seat];
     const autoPlay = view.auto !== undefined ? view.auto[seat] === true : offline;
 
-    roundRect(ctx, x, y, w, h, 6);
+    roundRect(ctx, x, y, w, h, 8);
     ctx.fillStyle = isWinner ? 'rgba(230,193,75,0.3)' : 'rgba(0,0,0,0.4)';
     ctx.fill();
-    ctx.strokeStyle = isWinner ? '#f6e3a1' : isTurn ? '#e6c14b' : me ? 'rgba(230,193,75,0.45)' : 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = isWinner ? 3 : isTurn ? 2 : 1;
+    // 当前出牌方：边框呼吸。原来靠 `drawTurnCursor()` 在「对手手牌带」外面画一圈光标，
+    // 手牌带删掉后那圈框会浮在牌河上，已整体删除 —— 回合提示改由铭牌承担。
+    const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 280);
+    ctx.strokeStyle = isWinner
+      ? '#f6e3a1'
+      : isTurn
+        ? `rgba(230,193,75,${0.55 + 0.45 * pulse})`
+        : me
+          ? 'rgba(230,193,75,0.45)'
+          : 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = isWinner ? 3 : isTurn ? 3 : 1;
     ctx.stroke();
 
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
 
-    let tx = x + 10;
+    // ---- 第一行：庄标 + 风位·昵称（左）/ 总分（右）----
+    let tx = x + 12;
     if (dealer) {
-      roundRect(ctx, x + 8, y + 5, 20, 17, 4);
+      roundRect(ctx, x + 10, y + 8, 24, 20, 5);
       ctx.fillStyle = '#e6c14b';
       ctx.fill();
       ctx.fillStyle = '#22200f';
-      ctx.font = font(11, true);
+      ctx.font = font(13, true);
       ctx.textAlign = 'center';
-      ctx.fillText('庄', x + 18, y + 14);
+      ctx.fillText('庄', x + 22, y + 18);
       ctx.textAlign = 'left';
-      tx = x + 33;
+      tx = x + 40;
     }
+
+    const tv = (view.totals && view.totals[seat]) || 0;
+    const scoreText = tv > 0 ? `+${tv}` : `${tv}`;
+    ctx.font = font(13, true);
+    const scoreW = ctx.measureText(scoreText).width;
 
     const rawName = (view.names && view.names[seat]) || this.wind(seat);
-    const short = rawName.length > (me ? 4 : 5) ? rawName.slice(0, me ? 4 : 5) + '…' : rawName;
-    ctx.font = font(11);
-    ctx.fillStyle = isWinner ? '#ffe9a8' : isTurn ? '#e6c14b' : '#e8efe9';
-    ctx.fillText(`${this.wind(seat)}·${short}${me ? '·我' : ''}`, tx, y + 14);
-
-    ctx.font = font(12);
-    if (isWinner) {
-      ctx.fillStyle = '#ffe9a8';
-      ctx.font = font(13, true);
-      ctx.fillText('胡牌！', tx, y + 31);
-      ctx.font = font(12);
-    } else if (autoPlay) {
-      ctx.fillStyle = '#e0a06a';
-      ctx.fillText('托管中', tx, y + 31);
-    } else if (isTurn) {
-      ctx.fillStyle = '#e6c14b';
-      ctx.fillText('出牌中', tx, y + 31);
-    } else {
-      ctx.fillStyle = '#9db5a8';
-      ctx.fillText(`${this.effCounts[seat]} 张`, tx, y + 31);
+    ctx.font = font(13);
+    let label = `${this.wind(seat)}·${rawName}${me ? '·我' : ''}`;
+    // 昵称可能很长：按「分数左侧的剩余宽度」逐步截断，宁可省略也不压到分数
+    const room = x + w - 10 - scoreW - 10 - tx;
+    while (label.length > 2 && ctx.measureText(label).width > room) {
+      label = `${label.slice(0, -2)}…`;
     }
-    const tv = (view.totals && view.totals[seat]) || 0;
+    ctx.fillStyle = isWinner ? '#ffe9a8' : isTurn ? '#e6c14b' : '#e8efe9';
+    ctx.fillText(label, tx, y + 18);
+
     ctx.textAlign = 'right';
-    ctx.font = font(12, true);
     ctx.fillStyle = tv > 0 ? '#43c07c' : tv < 0 ? '#e07a6a' : '#9db5a8';
-    ctx.fillText(tv > 0 ? `+${tv}` : `${tv}`, x + w - 10, y + 31);
+    ctx.fillText(scoreText, x + w - 10, y + 18);
+
+    // ---- 第二行左：剩余手牌数量（胶囊底衬，避免与牌河混读）----
+    const n = this.effCounts[seat] || 0;
+    ctx.font = font(12);
+    const lblW = ctx.measureText('手牌').width;
+    ctx.font = font(16, true);
+    const numW = ctx.measureText(String(n)).width;
+    const chipW = lblW + numW + 16;
+    roundRect(ctx, tx - 4, y + 29, chipW, 22, 6);
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(230,193,75,0.28)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.textAlign = 'left';
+    ctx.font = font(12);
+    ctx.fillStyle = '#9db5a8';
+    ctx.fillText('手牌', tx + 4, y + 40);
+    ctx.font = font(16, true);
+    ctx.fillStyle = '#f2f7f3';
+    ctx.fillText(String(n), tx + 4 + lblW + 5, y + 40);
+
+    // ---- 第二行右：状态 ----
+    ctx.textAlign = 'right';
+    if (isWinner) {
+      ctx.font = font(14, true);
+      ctx.fillStyle = '#ffe9a8';
+      ctx.fillText('胡牌！', x + w - 10, y + 40);
+    } else if (autoPlay) {
+      ctx.font = font(13);
+      ctx.fillStyle = '#e0a06a';
+      ctx.fillText('托管中', x + w - 10, y + 40);
+    } else if (isTurn) {
+      ctx.font = font(13);
+      ctx.fillStyle = '#e6c14b';
+      ctx.fillText('出牌中', x + w - 10, y + 40);
+    }
   }
 
   // ---------- 互动表情与铭牌气泡 ----------
@@ -1077,20 +1150,15 @@ class Table {
     }
   }
 
+  /**
+   * 赢家高亮框 = 该家明牌的整体外框。`drawRevealHand()` 每帧都会把
+   * 「这家明牌占了哪块矩形」写进 `revealRects[slot]`，这里直接取，不再另算一套坐标
+   * （曾经两处各算一次，牌张尺寸一改就错位）。
+   */
   winnerRect(view) {
     const seat = view.winner;
     if (seat === null || view.phase !== 'over') return null;
-    const slot = this.disp(view, seat);
-    if (slot === 0) return this.handRect;
-    const n = ((view.reveal && view.reveal[seat]) || []).length;
-    if (n === 0) return null;
-    if (slot === 2) {
-      const total = n * 30 - 2;
-      return { x: (W - total) / 2 - 5, y: 49, w: total + 10, h: 46 };
-    }
-    const total = n * 34 - 2;
-    const x = slot === 3 ? 155 : 1087;
-    return { x, y: 155, w: 38, h: total + 10 };
+    return this.revealRects[this.disp(view, seat)] || null;
   }
 
   drawWinnerHighlight(view) {
@@ -1108,17 +1176,27 @@ class Table {
     ctx.restore();
   }
 
+  /**
+   * 结算横幅：**挂在环内上沿、中心盘正上方**（y 214~254）。
+   * 原来画在画布最顶端（y 4~48）——对手手牌背删掉后那里是「对家摊牌」的第一行，
+   * 横幅刚好压住 9 张明牌（截图实测）。挪到环内后：对家副露在 160~212、中心盘从 256 起，
+   * 左右两侧竖排副露止于 x 450 / 始于 x 835，横幅 470~810 全部避开。
+   */
   drawResultBanner(view) {
     const seat = view.winner;
     if (seat === null || view.phase !== 'over') return;
     const name = (view.names && view.names[seat]) || this.wind(seat);
-    const main = `${this.wind(seat)}·${name} 胡`;
+    let main = `${this.wind(seat)}·${name} 胡`;
     const sub = view.result || '';
     const ctx = this.ctx;
-    const bw = 440;
-    const bh = 44;
+    const bw = 340;
+    const bh = 40;
     const bx = (W - bw) / 2;
-    const by = 4;
+    const by = 214;
+    ctx.font = font(16, true);
+    while (main.length > 2 && ctx.measureText(main).width > bw - 24) {
+      main = `${main.slice(0, -2)}…`;
+    }
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,0.5)';
     ctx.shadowBlur = 10;
@@ -1134,184 +1212,15 @@ class Table {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#22200f';
-    ctx.font = font(19, true);
-    ctx.fillText(main, W / 2, by + 16);
+    ctx.font = font(16, true);
+    ctx.fillText(main, W / 2, by + 14);
     if (sub) {
       ctx.fillStyle = 'rgba(34,32,15,0.78)';
-      ctx.font = font(12);
-      ctx.fillText(sub, W / 2, by + 34);
+      ctx.font = font(11);
+      let s = sub;
+      while (s.length > 2 && ctx.measureText(s).width > bw - 20) s = `${s.slice(0, -2)}…`;
+      ctx.fillText(s, W / 2, by + 30);
     }
-  }
-
-  drawTurnCursor(view) {
-    if (this.dealing || view.phase !== 'playing' || view.claimWindow) return;
-    const seat = view.turn;
-    const slot = this.disp(view, seat);
-    let rect = null;
-    if (slot === 0) {
-      rect = this.handRect;
-    } else if (slot === 2) {
-      const total = view.counts[seat] * 34 - 2;
-      rect = { x: (W - total) / 2 - 4, y: 50, w: total + 8, h: 30 };
-    } else if (slot === 3) {
-      const total = view.counts[seat] * 32 - 2;
-      rect = { x: 156, y: 156, w: 30, h: total + 8 };
-    } else if (slot === 1) {
-      const total = view.counts[seat] * 32 - 2;
-      rect = { x: 1088, y: 156, w: 30, h: total + 8 };
-    }
-    if (!rect) return;
-
-    const ctx = this.ctx;
-    const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 280);
-    ctx.save();
-    ctx.strokeStyle = `rgba(230, 193, 75, ${0.35 + 0.55 * pulse})`;
-    ctx.lineWidth = 3;
-    roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 8);
-    ctx.stroke();
-
-    const cx = rect.x + rect.w / 2;
-    const cy = rect.y + rect.h / 2;
-    const s = 11;
-    ctx.fillStyle = `rgba(230, 193, 75, ${0.55 + 0.45 * pulse})`;
-    ctx.beginPath();
-    if (slot === 0) {
-      const px = cx;
-      const py = rect.y + 16 + pulse * 5;
-      ctx.moveTo(px, py);
-      ctx.lineTo(px - s, py - s);
-      ctx.lineTo(px + s, py - s);
-    } else if (slot === 2) {
-      const px = cx;
-      const py = rect.y + rect.h - 16 - pulse * 5;
-      ctx.moveTo(px, py);
-      ctx.lineTo(px - s, py + s);
-      ctx.lineTo(px + s, py + s);
-    } else if (slot === 3) {
-      const px = rect.x + rect.w - 16 - pulse * 5;
-      ctx.moveTo(px, cy);
-      ctx.lineTo(px + s, cy - s);
-      ctx.lineTo(px + s, cy + s);
-    } else {
-      const px = rect.x + 16 + pulse * 5;
-      ctx.moveTo(px, cy);
-      ctx.lineTo(px - s, cy - s);
-      ctx.lineTo(px - s, cy + s);
-    }
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-
-  drawMyHand(view, myTiles, drawn) {
-    let rest = myTiles;
-    if (drawn !== null) {
-      const idx = rest.indexOf(drawn);
-      if (idx >= 0) rest = rest.slice(0, idx).concat(rest.slice(idx + 1));
-    }
-
-    const n = rest.length + (drawn !== null ? 1 : 0);
-    if (n === 0) {
-      this.handRect = null;
-      return;
-    }
-    const total = n * HAND_PITCH - (HAND_PITCH - HAND_W) + (drawn !== null ? DRAWN_GAP : 0);
-    const startX = (W - total) / 2;
-    const topY = drawn !== null ? HAND_Y - DRAWN_RAISE : HAND_Y;
-    this.handRect = {
-      x: startX - 4,
-      y: topY - 4,
-      w: total + 8,
-      h: HAND_H + 8 + (drawn !== null ? DRAWN_RAISE : 0),
-    };
-
-    if (this.prevDrawn !== null && drawn === null && this.prevHandLen === myTiles.length + 1 && this.prevDrawnX > 0) {
-      const target = myTiles.indexOf(this.prevDrawn);
-      if (target >= 0) {
-        this.anim = { tile: this.prevDrawn, from: this.prevDrawnX, to: startX + target * HAND_PITCH, start: Date.now() };
-      }
-    }
-
-    let skipped = false;
-    rest.forEach((t, i) => {
-      if (this.anim && !skipped && t === this.anim.tile) {
-        skipped = true;
-        return;
-      }
-      const x = startX + i * HAND_PITCH;
-      this.drawTile(t, x, HAND_Y, HAND_W, HAND_H, view);
-      this.markDeclare(view, t, x, HAND_Y);
-      this.hits.push({ tile: t, x, y: HAND_Y });
-    });
-
-    let drawnX = -1;
-    if (drawn !== null) {
-      drawnX = startX + rest.length * HAND_PITCH + DRAWN_GAP;
-      this.drawDrawn(drawn, drawnX, view);
-      this.hits.push({ tile: drawn, x: drawnX, y: HAND_Y - DRAWN_RAISE });
-    }
-
-    if (this.anim) {
-      const k = Math.min(1, (Date.now() - this.anim.start) / ANIM_MS);
-      const x = this.anim.from + (this.anim.to - this.anim.from) * k;
-      const y = HAND_Y - DRAWN_RAISE * (1 - k);
-      this.drawTile(this.anim.tile, x, y, HAND_W, HAND_H, view);
-      this.markDeclare(view, this.anim.tile, x, y);
-      this.hits.push({ tile: this.anim.tile, x, y });
-      if (k >= 1) this.anim = null;
-      else this.scheduleFrame();
-    }
-
-    this.prevDrawn = drawn;
-    this.prevHandLen = myTiles.length;
-    if (drawn !== null) this.prevDrawnX = drawnX;
-
-    if (this.canDiscard) {
-      const ctx = this.ctx;
-      ctx.fillStyle = 'rgba(230,193,75,0.9)';
-      ctx.font = font(12);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const tip =
-        view.mustDiscard.length > 0
-          ? `必须先打出 ${view.mustDiscard.map((t) => tileName(t)).join('、')}`
-          : '点击手牌打出';
-      ctx.fillText(tip, W / 2, HAND_Y - 10);
-    }
-  }
-
-  markDeclare(view, t, x, y) {
-    const frozen = (view.declared || []).some((d) => d.seat === view.mySeat && d.tile === t);
-    const must = (view.mustDiscard || []).indexOf(t) >= 0;
-    if (!frozen && !must) return;
-    const ctx = this.ctx;
-    ctx.strokeStyle = frozen ? '#e6c14b' : '#e05a4a';
-    ctx.lineWidth = 2;
-    roundRect(ctx, x - 1, y - 1, HAND_W + 2, HAND_H + 2, 5);
-    ctx.stroke();
-    if (frozen) {
-      ctx.fillStyle = '#e6c14b';
-      ctx.font = font(11, true);
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('展', x + 3, y + 8);
-    }
-  }
-
-  drawDrawn(t, x, view) {
-    const y = HAND_Y - DRAWN_RAISE;
-    this.drawTile(t, x, y, HAND_W, HAND_H, view);
-    this.markDeclare(view, t, x, y);
-    const ctx = this.ctx;
-    ctx.strokeStyle = '#e6c14b';
-    ctx.lineWidth = 2;
-    roundRect(ctx, x - 1, y - 1, HAND_W + 2, HAND_H + 2, 5);
-    ctx.stroke();
-    ctx.fillStyle = '#e6c14b';
-    ctx.font = font(11, true);
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('新', x + HAND_W + 4, y + 8);
   }
 
   scheduleFrame() {
@@ -1339,10 +1248,20 @@ class Table {
     ctx.restore();
   }
 
+  /**
+   * 画一张牌：**优先用 CDN 位图**，取不到则纯矢量兜底。
+   *
+   * 为什么位图不在代码包里：官方代码包体检两条硬指标 —— 主包 < 1.5MB、**图片资源合计 ≤ 200KB**，
+   * 34 张牌面无论怎么压都过不了（139×202 WebP 也要 251KB，早期 93×135 PNG 更是 731KB）。
+   * 现在走 `utils/tileimg.js`：后端 `/api/tiles` 给清单、CDN 给图；**清单没取到 / 单张解码失败，
+   * 就落到下面的矢量分支**，表现只是「牌面抽象一点」，不会白板也不会卡住。
+   * 矢量分支的另一个好处：牌河单张只有 9~13 CSS px，矢量文字比缩小的写实贴图更好认。
+   */
   drawTile(t, x, y, w, h, view, noGlow) {
     const ctx = this.ctx;
-    const r = Math.max(3, Math.floor(w * 0.12));
+    const r = Math.max(2, Math.floor(w * 0.14));
     if (t < 0) {
+      // 牌背
       roundRect(ctx, x, y, w, h, r);
       ctx.fillStyle = '#4f97e6';
       ctx.fill();
@@ -1362,7 +1281,8 @@ class Table {
     const isPi = view.jingPi === t || ((view.gz && view.gz.zheng.indexOf(t) >= 0) || false);
     const isFu = view.jingFu === t || ((view.gz && view.gz.fu.indexOf(t) >= 0) || false);
 
-    const art = tileArt(t);
+    // CDN 位图优先（`tileimg` 已按清单预解码）；没有就用下面的矢量牌面
+    const art = tileimg.art(t);
     if (art) {
       ctx.save();
       roundRect(ctx, x, y, w, h, r);
@@ -1386,11 +1306,13 @@ class Table {
       return;
     }
 
+    // 牌面：米白底 + 底部立体边
     roundRect(ctx, x, y, w, h, r);
-    ctx.fillStyle = '#f6f2e7';
+    ctx.fillStyle = '#f8f5ec';
     ctx.fill();
-    ctx.fillStyle = '#ddd6c2';
-    ctx.fillRect(x + 1, y + h - Math.max(3, h * 0.1), w - 2, Math.max(3, h * 0.1));
+    const bevel = Math.max(2, Math.round(h * 0.1));
+    ctx.fillStyle = '#e3dcc8';
+    ctx.fillRect(x + 1, y + h - bevel, w - 2, bevel - 1);
     if (isPi || isFu) {
       this.jingBorder(x, y, w, h, r, isPi);
     } else {
@@ -1405,28 +1327,32 @@ class Table {
     const cx = x + w / 2;
     if (t < 27) {
       const suit = suitOf(t);
-      const rank = String(rankOf(t));
-      ctx.fillStyle = suit === 'm' ? '#1a1a2e' : SUIT_COLOR[suit];
-      ctx.font = font(Math.floor(h * 0.4), true);
-      ctx.fillText(rank, cx, y + h * 0.33);
-      ctx.fillStyle = SUIT_COLOR[suit];
-      ctx.font = font(Math.floor(h * 0.32), true);
-      ctx.fillText(SUIT_CHAR[suit], cx, y + h * 0.68);
-    } else if (t === 33) {
-      const bw = w * 0.52;
+      // 万：数字用墨色、萬字用红色；条全绿、筒全蓝 —— 与真实牌面同色系，小尺寸下靠颜色分辨
+      const numColor = suit === 'm' ? '#1a1a2e' : SUIT_COLOR[suit];
+      const suitColor = suit === 'm' ? '#c62828' : SUIT_COLOR[suit];
+      ctx.fillStyle = numColor;
+      ctx.font = font(Math.max(7, Math.round(h * 0.42)), true);
+      ctx.fillText(String(rankOf(t)), cx, y + h * 0.34);
+      ctx.fillStyle = suitColor;
+      ctx.font = font(Math.max(6, Math.round(h * 0.3)), true);
+      ctx.fillText(SUIT_CHAR[suit], cx, y + h * 0.7);
+      return;
+    }
+    if (t === 33) {
+      // 白板：蓝框（真实牌面就是空框）
+      const bw = w * 0.54;
       const bh = h * 0.56;
       ctx.strokeStyle = '#1f5fbf';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = Math.max(1.5, w * 0.06);
       ctx.strokeRect(cx - bw / 2, y + h / 2 - bh / 2, bw, bh);
-      ctx.strokeStyle = 'rgba(31,95,191,0.4)';
+      ctx.strokeStyle = 'rgba(31,95,191,0.38)';
       ctx.lineWidth = 1;
       ctx.strokeRect(cx - bw / 2 + 3, y + h / 2 - bh / 2 + 3, bw - 6, bh - 6);
-    } else {
-      const ch = tileName(t);
-      ctx.fillStyle = t === 31 ? '#c62828' : t === 32 ? '#1b7f3b' : '#1a1a1a';
-      ctx.font = font(Math.floor(h * 0.5), true);
-      ctx.fillText(ch, cx, y + h / 2 + 1);
+      return;
     }
+    ctx.fillStyle = t === 31 ? '#c62828' : t === 32 ? '#1b7f3b' : '#1a1a2e';
+    ctx.font = font(Math.max(8, Math.round(h * 0.52)), true);
+    ctx.fillText(tileName(t), cx, y + h / 2 + 1);
   }
 }
 

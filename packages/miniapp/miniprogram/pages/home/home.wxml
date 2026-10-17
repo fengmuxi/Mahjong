@@ -1,4 +1,4 @@
-<view class="page bg-{{bg}}">
+<view class="{{pageLeaving ? 'page-leaving' : ''}} page bg-{{bg}}">
   <view class="banner" wx:if="{{netShown}}">{{netText}}</view>
 
   <view class="panel home-card">

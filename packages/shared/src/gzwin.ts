@@ -8,8 +8,9 @@
  *      **结构上就不可能拿精凑牌**——新增任何通配能力都必须先改 `gzIsWildcard`。
  *   2. **乱风**（§四）——**风、箭各自成组**：东南西北任意 3 张不同风成一组、中发白任意 3 张不同箭
  *      成一组，**风箭不可混**（东+南 可吃 西、不可吃 中）；字牌之间可以相吃；
- *   3. **有精胡牌受限**（§6.5）——手上有精只能：精吊（精牌作将，可配任意一张牌）/ 特殊牌型 /
- *      精归位后无精走德国；**不得平胡**（杠开豁免除外）；
+ *   3. **有精胡牌受限**（§6.5）——手上有精只能：精吊（听牌时精已单张在手作将：将牌 =
+ *      {精, 胡牌张}，或精对作将）/ 特殊牌型 / 精归位（精当本张用，视为德国）/
+ *      配将平胡（差将摸精硬凑将，只按平胡结算不加精吊分，2026-10-18 澄清口径）；
  *   4. **德国 = 手上无精**（§6.4），德中德 = 德国 + 大牌型（×4）。
  */
 
@@ -30,9 +31,19 @@ export interface GzWinFacts {
   qixing: boolean;
   /** 手上有精牌（暗牌，含胡进那张；§6.5） */
   hasJing: boolean;
-  /** 精吊：精牌作将牌——将牌 = 1 张精 + 任意 1 张牌（平胡 / 大七对型），或七对含精对（§6.5，+5 分） */
+  /**
+   * 精吊（§6.5 + 2026-10-18 澄清口径）：**听牌时精已单张在手作将** ——
+   * 将牌 = {精, 胡的那张牌}（摸任意一张都能胡），或精对作将（{精,精}，含正精+副精）。
+   * 「手上差将、靠摸上来的精硬凑将」不算精吊（见 jingPairPlain）。
+   */
   jingdiao: boolean;
-  /** 德国：手上无精（§6.4，+8 分） */
+  /**
+   * 配将平胡（2026-10-18 澄清口径）：将牌 = {精, 手上原有普通牌} —— 胡牌成立、
+   * 但只按平胡底分结算（无精吊 +5）；要精吊须先打掉散牌留精单吊。
+   */
+  jingPairPlain: boolean;
+  /** 德国：手上无精（§6.4）、精归位（§6.5③，+8），或将牌 = 明面精 + 同面本张成对
+   *  （此时与精吊同时成立：+5 +8 = 13，2026-10-18 口径） */
   german: boolean;
   /** 牌型底分（§6.1；多牌型并存取最高） */
   patternBase: number;
@@ -186,8 +197,16 @@ function jingKinds(j: GzJing): Tile[] {
  * 一次完整胡牌分析（§6）。
  * @param concealed 暗牌（含刚摸 / 点炮那张），melds 副露
  * @param gankai 是否杠上补牌胡（平胡豁免精吊限制，§6.6）
+ * @param winTile 胡的那张牌（自摸 = 刚摸那张 / 点炮 = 被胡那张）。精吊判定（将牌 = {精, 胡牌张}）必需；
+ *                缺省时只能判「精对作将」，配将一律按 jingPairPlain 处理
  */
-export function gzAnalyzeWin(concealed: Tile[], melds: Meld[], jing: GzJing, gankai: boolean): GzWinFacts {
+export function gzAnalyzeWin(
+  concealed: Tile[],
+  melds: Meld[],
+  jing: GzJing,
+  gankai: boolean,
+  winTile?: Tile | null,
+): GzWinFacts {
   const counts = tileCounts(concealed);
   const setsNeeded = 4 - melds.length;
   const noChi = melds.every((m) => m.type !== 'chi');
@@ -213,41 +232,101 @@ export function gzAnalyzeWin(concealed: Tile[], melds: Meld[], jing: GzJing, gan
   // 隐藏正精（zheng[1..5]）和隐藏副精（fu[1..5]）不显示、不算做精使用，只记分。
   const hasJing = concealed.some((t) => t === jing.zheng[0] || t === jing.fu[0]);
 
-  // 精吊（§6.5 + 确认口径）：精牌作将牌——将牌 = 1 张精 + **任意 1 张牌**（不要求两张同种精），
-  // 其余暗牌凑满 4 组面子（顺子 / 刻子 / 乱风组）；七对含精对也算精吊。
+  // 精吊（§6.5 + 2026-10-18 澄清口径）：前提是**听牌时精已单张在手作将** ——
+  //   ① 将牌 = {精, 胡牌张}：单吊精、摸/胡到任意一张都与它配成将（这就是「摸任意一张都能胡」）；
+  //   ② 将牌 = {精, 精}：精对作将（两张精都在暗牌里，含正精+副精、同种两张）。
+  // 「手上差个将、自摸摸上一张精硬凑将」（将牌 = {精, 手上原有普通牌}）**不算精吊**，
+  // 只按平胡结算（jingPairPlain）——要精吊须先打掉另一张散牌、留精单吊，下一轮才是。
   // 分解全为刻子且无吃牌副露（大七对型）记 jingdiaoTrips、含顺子型记 jingdiaoRuns——计底分用。
   let jingdiaoRuns = false;
   let jingdiaoTrips = false;
+  let jingPairPlain = false;
+  /** 将牌 = 明面精 + 同面本张成对 → 精吊与德国同时成立（+5 +8 = 13，2026-10-18 口径） */
+  let jingdiaoOnFace = false;
+  const kinds = jingKinds(jing);
   if (hasJing && !small7 && setsNeeded >= 0) {
-    outer: for (const kind of jingKinds(jing)) {
-      if (counts[kind] < 1) continue;
-      counts[kind] -= 1;
-      for (let partner = 0; partner < 34; partner++) {
-        if (counts[partner] < 1) continue;
-        counts[partner] -= 1;
-        if (gzDecompose(counts, setsNeeded, false, true)) {
-          jingdiaoRuns = true;
-          if (!jingdiaoTrips && noChi && gzDecompose(counts, setsNeeded, false, false)) jingdiaoTrips = true;
-        }
-        counts[partner] += 1;
-        if (jingdiaoTrips) {
-          counts[kind] += 1;
-          break outer;
+    // 从 counts 里摘掉将牌的两张再分解其余；返回该分解是「全刻子」还是「含顺子」
+    const tryPair = (a: Tile, b: Tile): 'runs' | 'trips' | false => {
+      if (counts[a] < 1 || counts[b] < 1) return false;
+      if (a === b && counts[a] < 2) return false;
+      counts[a] -= 1;
+      counts[b] -= 1;
+      let r: 'runs' | 'trips' | false = false;
+      if (gzDecompose(counts, setsNeeded, false, true)) {
+        r = 'runs';
+        if (noChi && gzDecompose(counts, setsNeeded, false, false)) r = 'trips';
+      }
+      counts[a] += 1;
+      counts[b] += 1;
+      return r;
+    };
+    // ① 将牌 = {精, 胡牌张}
+    if (winTile != null) {
+      for (const kind of kinds) {
+        const r = tryPair(kind, winTile);
+        if (r) {
+          if (r === 'trips') jingdiaoTrips = true;
+          else jingdiaoRuns = true;
+          // 将牌是「明面精 + 同面本张」成对（单吊精恰好摸上它的本张）→ 精吊与德国同时成立
+          if (kind === winTile) jingdiaoOnFace = true;
         }
       }
-      counts[kind] += 1;
+    }
+    // ② 将牌 = {精, 精}：精对作将 —— **两张精都必须在胡牌前的手牌里**（胡牌张不在将牌里，
+    //    它在某一组面子里）。差将摸上一张精、与手里另一张精凑对不算（那由 ①/③ 表达）。
+    const pre = [...counts];
+    if (winTile != null && pre[winTile] > 0) pre[winTile] -= 1;
+    for (const k1 of kinds) {
+      for (const k2 of kinds) {
+        if (pre[k1] < 1 || pre[k2] < 1 || (k1 === k2 && pre[k1] < 2)) continue;
+        const r = tryPair(k1, k2);
+        if (r) {
+          if (r === 'trips') jingdiaoTrips = true;
+          else jingdiaoRuns = true;
+          // 同面精对（明面精 + 它的本张）→ 同样精吊 + 德国同时成立
+          if (k1 === k2) jingdiaoOnFace = true;
+        }
+      }
+    }
+    // ③ 配将（将牌 = {精, 手上原有普通牌}）：只保证胡牌成立，按平胡结算
+    if (!jingdiaoRuns && !jingdiaoTrips) {
+      outer: for (const kind of kinds) {
+        if (counts[kind] < 1) continue;
+        counts[kind] -= 1;
+        for (let partner = 0; partner < 34; partner++) {
+          if (counts[partner] < 1) continue;
+          counts[partner] -= 1;
+          if (gzDecompose(counts, setsNeeded, false, true)) {
+            jingPairPlain = true;
+            counts[partner] += 1;
+            break outer;
+          }
+          counts[partner] += 1;
+        }
+        counts[kind] += 1;
+      }
     }
   }
-  const jingdiao = hasJing && (small7 || jingdiaoRuns || jingdiaoTrips);
+  // 七对含精对（{精,精}，两张都在暗牌里）也算精吊（§6.5）；
+  // 七对里的精对必然是「明面精 + 同面本张」→ 同样精吊 + 德国同时成立
+  const jingPair7 = small7 && kinds.some((k) => counts[k] >= 2);
+  if (jingPair7) jingdiaoOnFace = true;
+  const jingdiao = hasJing && (jingdiaoRuns || jingdiaoTrips || jingPair7);
   if (jingdiaoTrips && !shapes.includes('big7')) shapes.push('big7');
   if (jingdiaoRuns && !shapes.includes('pinghu')) shapes.push('pinghu');
 
-  // 合法性（§6.5 有精胡牌限制）
+  // 合法性（§6.5 + 2026-10-18 澄清）：无精 → 标准牌型；有精 → 精吊 / 特殊牌型 /
+  // 精归位（标准分解成立 = 精全按本张使用，§6.5③ 视为德国）/ 配将平胡（差将摸精）。
+  const standard = pinghu || big7 || small7 || sls;
+  const guiwei = hasJing && !jingdiao && standard; // 精归位（配将平胡优先级更低，见下）
   let valid: boolean;
   if (!hasJing) valid = shapes.length > 0;
   else if (jingdiao) valid = true;
-  else if (small7 || big7 || sls) valid = true;
-  else valid = gankai && pinghu; // 杠开平胡豁免
+  else if (standard) valid = true;
+  else if (jingPairPlain) {
+    valid = true;
+    if (!shapes.includes('pinghu')) shapes.push('pinghu');
+  } else valid = gankai && pinghu; // 杠开平胡豁免
 
   // 七星十三烂（§6.1）
   let qixing = false;
@@ -257,17 +336,19 @@ export function gzAnalyzeWin(concealed: Tile[], melds: Meld[], jing: GzJing, gan
     qixing = [27, 28, 29, 30, 31, 32, 33].every((w) => eff.has(w));
   }
 
-  // 底分（多牌型并存取最高；精吊按分解类型取平胡 / 大七对底分）
+  // 底分（多牌型并存取最高；精吊按分解类型取平胡 / 大七对底分；配将平胡取平胡底分）
   let patternBase = 0;
   if (qixing) patternBase = GZ_CONFIG.patternBase.qixing;
   else if (big7 || jingdiaoTrips) patternBase = GZ_CONFIG.patternBase.big7;
   else if (small7 || sls) patternBase = Math.max(GZ_CONFIG.patternBase.small7, GZ_CONFIG.patternBase.shisanlan);
-  else if (pinghu || jingdiaoRuns) patternBase = GZ_CONFIG.patternBase.pinghu;
+  else if (pinghu || jingdiaoRuns || jingPairPlain) patternBase = GZ_CONFIG.patternBase.pinghu;
 
-  const german = !hasJing; // 德国 = 手上无精（§6.4）
+  // 德国（§6.4 + §6.5③ + 2026-10-18 口径）：手上无精、精归位，
+  // 或将牌是「明面精 + 同面本张」成对（精吊与德国同时成立）
+  const german = !hasJing || guiwei || jingdiaoOnFace;
   // 德中德需看其余三家有没有精牌——胡型分析拿不到别家信息，由引擎判定（见 gzIsDezhongde）
 
-  return { valid, shapes, qixing, hasJing, jingdiao, german, patternBase };
+  return { valid, shapes, qixing, hasJing, jingdiao, jingPairPlain: jingPairPlain && !guiwei, german, patternBase };
 }
 
 /**
@@ -302,8 +383,9 @@ export function gzWinLabel(
   const parts: string[] = [];
   const shape = gzShapeName(f);
   if (shape !== '平胡') parts.push(shape);
-  if (f.hasJing) parts.push('精吊'); // 有宝 = 走精吊路线（§6.6）
-  else parts.push('德国');
+  // 精吊（精作将胡）与德国（无精 / 精归位 / 明面精与本张同面成对）可同时成立 →「精吊·德国」
+  if (f.jingdiao) parts.push('精吊');
+  if (f.german) parts.push('德国');
   if (dezhongde) parts.push('德中德');
   if (gankai) parts.push('杠开');
   if (tiandi === 'tian') parts.push('天和');

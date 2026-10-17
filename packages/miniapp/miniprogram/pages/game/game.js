@@ -7,21 +7,35 @@
  *                                保证画布盒 = 内容盒（小程序若非等比拉伸同样会让点牌错位）；
  *                                画布之外富余的宽度分给左右两栏（左记录 / 右聊天）
  *   · 点击换算                 → onCanvasTap：触摸点 − 画布 boundingClientRect → 逻辑坐标
- *   · 手牌操作条               → 画布下方的 DOM 手牌条（≥44px 触控面；提示与吃碰杠胡在其上方，
- *                                互不遮挡）。曾试过用 cover-view 盖在牌桌上，开发者工具里盖不住
- *                                原生 canvas（整块不可见），已改回流内，见 §10.8⑦
+ *                                （画布内现在只剩掷骰按钮与四角铭牌可点）
+ *   · 手牌                     → **只在画布下方的 DOM 手牌条**。2026-10-17 起画布内不再常驻
+ *                                手牌带：1280 逻辑宽被压到约 500 CSS px，牌面只剩 20×27，
+ *                                比 DOM 条小一半且点不准；画布仅在摊牌时展示一次自己的明牌。
+ *                                （曾试过用 cover-view 盖在牌桌上，开发者工具里盖不住原生
+ *                                canvas、整块不可见，已改回流内，见 §10.8⑦）
  *   · window.confirm           → 页内 .layer 确认框（wx.showModal 原生弹窗在本环境不可靠）
  *   · 响应倒计时               → 200ms 心跳且只在文案变化时 setData（方案 P4：setData 节制）
  */
 
-const { tileName, seatWind } = require('../../lib/shared/tiles.js');
+const { tileName, seatWind, suitOf, rankOf } = require('../../lib/shared/tiles.js');
 const { CHAT_TEXT_MAX, THROW_EMOJI, THROW_EMOJI_TONES, throwEmojiOf } = require('../../lib/shared/index.js');
 const { variantName } = require('../../lib/shared/rules/index.js');
 const { Table } = require('../../utils/table.js');
-const tiles = require('../../utils/tiles.js');
+const tileimg = require('../../utils/tileimg.js');
+const diceUtil = require('../../utils/dice.js');
 const room = require('../../utils/room.js');
 const net = require('../../utils/net.js');
 const ui = require('../../utils/ui.js');
+
+/** 牌面花色字（万/条/筒）；风箭牌直接显示牌名（东南西北中发白） */
+const SUIT_TEXT = { m: '万', s: '条', p: '筒' };
+/** 风箭牌的色调类名（对应 game.wxss 的 .tone-*）：中红、发绿、白蓝框、风牌墨色 */
+function honorTone(t) {
+  if (t === 31) return 'zhong';
+  if (t === 32) return 'fa';
+  if (t === 33) return 'bai';
+  return 'wind';
+}
 
 const CHAT_QUICK = ['快点啊', '胡了！🎉', '不好意思', '等一下', '这把稳了', '笑死😂', '加油', '别急'];
 const CHAT_EMOJI = ['😀', '😂', '😍', '😎', '🤔', '😅', '👍', '👏', '🎉', '🔥', '💡', '🀄', '❤️', '🍺', '😴', '🙏'];
@@ -70,6 +84,8 @@ Page({
   data: {
     // HUD
     code: '',
+    // 页面切换转场：room.js 跳转前置 true → 根节点 .page-leaving 淡出后再 redirectTo
+    pageLeaving: false,
     variantLabel: '',
     wallText: '',
     jingText: '',
@@ -141,8 +157,8 @@ Page({
     dissolvedRows: [],
     diceShown: false,
     diceMsg: '',
-    die1: 0,
-    die2: 0,
+    // 两枚骰子：{ idx, rows(3×3 点子网格：0 空 / 1 黑 / 2 红), tumbling, land }
+    dice: diceUtil.pair(1, 1, false, false),
     netShown: false,
     netText: '',
     toastShown: false,
@@ -252,17 +268,32 @@ Page({
         const canvas = info.node;
         this.canvasNode = canvas;
         this.table = new Table(canvas, dpr);
-        this.table.onDiscard = (t) => this.tryDiscard(t);
+        // 画布不再承担出牌（手牌带已移除）：这里不再挂 onDiscard。
+        // 出牌唯一入口是下方的 DOM 手牌条（onTrayTap → tryDiscard）。
         this.table.onRollDice = () => room.send({ t: 'rollDice' });
         this.table.onTagClick = (seat) => {
           if (seat !== this.view.mySeat) this.openEmotePicker(seat);
         };
-        tiles.preload(canvas, () => {
-          if (this.view) this.table.render(this.view);
-        });
         this.fitCanvas();
         if (this.view) this.table.render(this.view);
+        // 牌面 CDN：拿到清单后预解码到画布，再重画布与手牌条（手牌条会换成 <image>）。
+        // 失败/没配域名都不影响：矢量兜底已经在画了。
+        this.loadTileArt(canvas);
       });
+  },
+
+  /** 拉 CDN 牌面（只做一次；失败就永远走矢量兜底） */
+  loadTileArt(canvas) {
+    if (this.tileArtAsked) return;
+    this.tileArtAsked = true;
+    tileimg.ensure((ok) => {
+      if (!ok) return;
+      tileimg.preload(canvas, (got) => {
+        if (!got) return;
+        if (this.view) this.table.render(this.view);
+        if (this.trayV) this.syncHandTray(this.trayV, this.trayRitual);
+      });
+    });
   },
 
   /**
@@ -323,6 +354,13 @@ Page({
           const availOne = leftover - SIDE_GAP;
           chatW = availOne >= SIDE_CHAT_MIN ? Math.min(SIDE_CHAT_PREF, availOne) : 0;
         }
+        // 掷骰仪式（diceShown）期间侧栏整条让位：骰子覆盖层盖满全页、画布也是隐藏态，
+        // 记录 / 聊天留在原位只是两块被压暗的空壳。骰子收起后由 clearDice → fitCanvas 还原。
+        // diceShown 在本轮量算里不会变，收敛性不受影响。
+        if (this.data.diceShown) {
+          logW = 0;
+          chatW = 0;
+        }
 
         const sideCols = chatW > 0;
         // 侧栏占掉的宽度：一栏时只有 1 个 gap，两栏时 2 个
@@ -332,8 +370,13 @@ Page({
         const h = Math.round(w / 2);
 
         const patch = {};
-        if (w !== this.data.canvasW) patch.canvasW = w;
-        if (h !== this.data.canvasH) patch.canvasH = h;
+        // 画布尺寸在骰子期间**冻结**：骰子覆盖层下画布是隐藏态，若按「无侧栏」的宽高
+        // 更新 canvasW/H，骰子一收画布会以先宽后窄经历一次缩放跳变（用户报的「缩放现象」）。
+        // 冻结后骰子结束时的 canvasW/H 与骰前一致，clearDice 一次性还原侧栏即无缝回位。
+        if (!this.data.diceShown) {
+          if (w !== this.data.canvasW) patch.canvasW = w;
+          if (h !== this.data.canvasH) patch.canvasH = h;
+        }
         if (sideCols !== this.data.sideCols) patch.sideCols = sideCols;
         if (logW !== this.data.logW) patch.logW = logW;
         if (chatW !== this.data.chatW) patch.chatW = chatW;
@@ -412,8 +455,8 @@ Page({
       /* 老基础库无此 API：走下面的兜底值 */
     }
     if (!(navH > 0)) navH = (info.statusBarHeight || 0) + 44;
-    // 紧凑档(≤680px)：HUD 26 + 状态 17 + 控件 30(可选) + 手牌 58 + 页内边距 ≈ 130
-    const chrome = info.windowHeight <= 680 ? 130 : 90;
+    // 紧凑档(≤680px)：HUD 26 + 状态 17 + 控件 30(可选) + 手牌 62 + 页内边距 ≈ 136
+    const chrome = info.windowHeight <= 680 ? 136 : 90;
     const w = info.windowWidth - 16;
     const h = info.windowHeight - navH - chrome;
     if (!(w > 0) || !(h > 0)) return null;
@@ -543,6 +586,16 @@ Page({
     // 新一局开始（或换玩法重开）时清掉「本局结算 ▲」——它只属于已结束的那一局
     if (!over && this.data.settleRestoreShown) patch.settleRestoreShown = false;
     this.setData(patch);
+
+    // 结算浮层还开着但服务端已经开下一局 → 收掉浮层。
+    // 2026-10-18 起「下一局」若全员就绪，服务端**只发 game 不再广播大厅态**
+    // （避免 state→game 把客户端踹回大厅），所以收浮层必须靠 game 自己来。
+    // 必须走 syncModal()：modalOpen 是六个浮层标志的取或，直接 setData 会漏掉
+    // 画布的 .on-modal 摘除（syncModal 里还补 table.render + fitCanvas）。
+    if (!over && this.data.settleShown) {
+      this.setData({ settleShown: false });
+      this.syncModal();
+    }
 
     this.renderControls(v);
     this.renderLog(v);
@@ -695,7 +748,7 @@ Page({
     this.setData({ controls });
   },
 
-  /** 出牌唯一出口（画布点牌 + 手牌操作条），报杠两条拦截先于发信 */
+  /** 出牌唯一出口（DOM 手牌条），报杠两条拦截先于发信 */
   tryDiscard(tile) {
     const v = this.view;
     if (v) {
@@ -711,11 +764,14 @@ Page({
     room.send({ t: 'discard', tile });
   },
 
-  /** 手牌操作条（画布底部手牌带缩小后点不准的替代触控面；在画布下方流内，
-   *  手牌显隐不改变 canvas-wrap 尺寸，因此不需要重量画布盒）。
+  /** 手牌条 = **唯一的出牌入口**（画布内的常驻手牌带已于 2026-10-17 移除）。
+   *  它在画布下方流内，手牌显隐不改变 canvas-wrap 尺寸，因此不需要重量画布盒。
    *  注意：**吃碰杠胡的选择期（v.claims）也要显示手牌** —— 不看手牌没法判断该碰还是该胡；
    *  此时 trayActive=false（不能出牌），提示与选项由半透明遮罩盖在手牌上（见 game.wxml）。 */
+  /** 记住这一帧的参数，供 CDN 贴图到位后重跑（见 loadTileArt） */
   syncHandTray(v, ritual) {
+    this.trayV = v;
+    this.trayRitual = ritual === undefined ? null : ritual;
     if (ritual !== null || v.phase === 'over') {
       // 结算/摊牌：手牌带整条退场（WXML 里 overPhase 会直接不渲染 .tray-stack），
       // 腾出的高度归画布 —— 见 renderGame 的 chromeKey → fitCanvas()
@@ -737,12 +793,19 @@ Page({
     const pi = v.jingPi;
     const fu = v.jingFu;
     // 手牌里同牌面可能有多张，wx:key 需要唯一 → 用「牌面-序号」合成
+    // 牌面是**矢量文字**（2026-10-18 起不再有 PNG 贴图，官方体检要求图片合计 ≤ 200KB），
+    // 这里按花色给出要渲染的两个字：主字（数字/风字/箭字）+ 花色字。
+    const face = (t) => {
+      const suit = suitOf(t);
+      if (suit === 'z') return { honor: true, rank: '', suitChar: tileName(t), tone: honorTone(t) };
+      return { honor: false, rank: String(rankOf(t)), suitChar: SUIT_TEXT[suit], tone: suit };
+    };
     const tray = hand.map((t, i) => ({
       key: `${t}-${i}`,
       tile: t,
       name: tileName(t),
-      img: `/tiles/t${String(t).padStart(2, '0')}.png`,
-      imgOk: true,
+      ...face(t),
+      cdn: tileimg.urlOf(t),
       pi: t === pi,
       fu: t === fu,
       frozen: frozen.indexOf(t) >= 0,
@@ -753,8 +816,8 @@ Page({
         key: `${v.drawn}-drawn`,
         tile: v.drawn,
         name: tileName(v.drawn),
-        img: `/tiles/t${String(v.drawn).padStart(2, '0')}.png`,
-        imgOk: true,
+        ...face(v.drawn),
+        cdn: tileimg.urlOf(v.drawn),
         pi: v.drawn === pi,
         fu: v.drawn === fu,
         frozen: frozen.indexOf(v.drawn) >= 0,
@@ -765,12 +828,15 @@ Page({
     this.setData({ trayShown: true, trayActive: canDiscard, tray });
   },
 
-  /** 牌面贴图加载失败 → 该张回退文字牌面（分包资源不可达时的降级，见方案 P5） */
+  /**
+   * CDN 图片加载失败（域名没登记 / 网络不通 / 单张 404）→ 该张回退矢量牌面。
+   * 只清这一张的 `cdn`，其它张继续用图片；不报错、不影响出牌。
+   */
   onTileImgError(e) {
     const tile = Number(e.currentTarget.dataset.tile);
     const idx = this.data.tray.findIndex((x) => x.tile === tile);
     if (idx < 0) return;
-    this.setData({ [`tray[${idx}].imgOk`]: false });
+    this.setData({ [`tray[${idx}].cdn`]: '' });
   },
 
   onTrayTap(e) {
@@ -833,30 +899,67 @@ Page({
     const tumbleMs = Math.min(c.kind === 'gang' ? 1500 : 2200, Math.floor(dur * 0.5));
     if (this.diceKey === c.rollAt) return;
     this.diceKey = c.rollAt;
-    this.clearDice();
+    this.stopDiceTimers();
+    // 记住骰前侧栏状态：结束后一次性还原（配合 fitCanvas 的画布尺寸冻结，无缩放跳变）
+    if (!this.data.diceShown) {
+      this.preDiceSides = { sideCols: this.data.sideCols, logW: this.data.logW, chatW: this.data.chatW };
+    }
     const msg = c.kind === 'deal' ? '庄家掷骰…' : c.kind === 'jing' ? '翻精掷骰…' : '杠后掷骰…';
     const dice = c.dice || [1, 1];
-    this.setData({ diceShown: true, modalOpen: true, diceMsg: msg, die1: 1 + Math.floor(Math.random() * 6), die2: 1 + Math.floor(Math.random() * 6) });
+    // 骰子改用九宫格点子（utils/dice.js），翻滚期每 100ms 换一次随机面
+    this.setData({
+      diceShown: true,
+      modalOpen: true,
+      diceMsg: msg,
+      dice: diceUtil.pair(diceUtil.randFace(), diceUtil.randFace(), true, false),
+    });
+    this.fitCanvas(); // 侧栏让位（记录 / 聊天在骰子阶段隐藏），结束后 clearDice 还原
     this.diceScramble = setInterval(() => {
-      this.setData({ die1: 1 + Math.floor(Math.random() * 6), die2: 1 + Math.floor(Math.random() * 6) });
-    }, 150);
+      this.setData({ dice: diceUtil.pair(diceUtil.randFace(), diceUtil.randFace(), true, false) });
+    }, 100);
     this.diceLand = setTimeout(() => {
       if (this.diceScramble) {
         clearInterval(this.diceScramble);
         this.diceScramble = null;
       }
-      this.setData({ die1: dice[0], die2: dice[1], diceMsg: this.diceResultText(v) });
+      // 定格：真实点数 + 回弹动画（.die.land）+ 点数含义文案
+      this.setData({
+        diceMsg: this.diceResultText(v),
+        dice: diceUtil.pair(dice[0], dice[1], false, true),
+      });
     }, tumbleMs);
     this.diceHide = setTimeout(() => this.clearDice(), dur + 550);
   },
 
-  clearDice() {
+  /** 只停定时器（playDice 重入时用，不动 diceShown / 侧栏状态） */
+  stopDiceTimers() {
     if (this.diceScramble) clearInterval(this.diceScramble);
     if (this.diceLand) clearTimeout(this.diceLand);
     if (this.diceHide) clearTimeout(this.diceHide);
     this.diceScramble = this.diceLand = this.diceHide = null;
-    this.setData({ diceShown: false });
+  },
+
+  /**
+   * 骰子阶段结束：**一次性**还原 diceShown + 骰前侧栏，再显示画布。
+   * 之前的写法是「先显示画布（此时 canvasW 已被骰子期间的无侧栏布局改宽）、
+   * fitCanvas 隔一拍再收窄」→ 画布以先宽后窄两次渲染 → 用户看到一次缩放跳变。
+   * 现在 fitCanvas 在骰子期间冻结 canvasW/H，clearDice 又把侧栏与 diceShown
+   * 合并在同一批 setData 里 → 画布重新显示时就是最终尺寸，无缩放。
+   */
+  clearDice() {
+    this.stopDiceTimers();
+    if (!this.data.diceShown) return;
+    const patch = { diceShown: false };
+    const pre = this.preDiceSides;
+    if (pre) {
+      patch.sideCols = pre.sideCols;
+      patch.logW = pre.logW;
+      patch.chatW = pre.chatW;
+      this.preDiceSides = null;
+    }
+    this.setData(patch);
     this.syncModal();
+    this.fitCanvas(); // 复核一次布局 + 重量画布点击盒（量到与冻结值一致则无事发生）
   },
 
   // ---------- 聊天 ----------

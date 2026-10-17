@@ -1,4 +1,7 @@
-<view class="page game bg-cloud">
+<!-- 掷骰覆盖层是两页共用的模板（样式在 app.wxss），import 必须在文件顶层 -->
+<import src="/templates/dice.wxml" />
+
+<view class="{{pageLeaving ? 'page-leaving' : ''}} page game bg-cloud">
   <view class="banner" wx:if="{{netShown}}">{{netText}}</view>
 
   <!-- HUD -->
@@ -19,7 +22,7 @@
         未读红点跟在后面。展开后面板占右侧一列（流内元素），与画布并排。
         宽屏侧栏模式（sideCols）聊天恒在右侧常驻列，这个圆钮就不需要了。
       -->
-      <button class="ghost chat-fab" wx:if="{{chatCollapsed && !sideCols}}" bindtap="onToggleChat">💬<text class="fab-badge" wx:if="{{chatUnread > 0}}">{{chatUnread > 99 ? '99+' : chatUnread}}</text></button>
+      <button class="ghost chat-fab" wx:if="{{chatCollapsed && !sideCols && !diceShown}}" bindtap="onToggleChat">💬<text class="fab-badge" wx:if="{{chatUnread > 0}}">{{chatUnread > 99 ? '99+' : chatUnread}}</text></button>
       <button class="ghost {{autoOn ? 'on' : ''}}" wx:if="{{autoShown}}" bindtap="onAuto">{{autoOn ? '托管中' : '托管'}}</button>
       <button class="ghost" bindtap="onEmoteOpen">🎯 互动</button>
       <button class="danger" wx:if="{{dissolveGameShown}}" bindtap="onAbort">解散对局</button>
@@ -165,13 +168,33 @@
           <view
             wx:for="{{tray}}"
             wx:key="key"
-            class="tile-btn {{item.drawn ? 'drawn' : ''}} {{item.frozen ? 'frozen' : ''}} {{item.must ? 'must' : ''}} {{item.pi ? 'pi' : ''}} {{item.fu ? 'fu' : ''}}"
+            class="tile-btn tone-{{item.tone}} {{item.drawn ? 'drawn' : ''}} {{item.frozen ? 'frozen' : ''}} {{item.must ? 'must' : ''}} {{item.pi ? 'pi' : ''}} {{item.fu ? 'fu' : ''}}"
             data-tile="{{item.tile}}"
             bindtap="onTrayTap"
           >
-            <!-- 贴图来自主包 tiles/；加载失败（路径不可达等）自动回退文字牌面，功能不中断 -->
-            <image wx:if="{{item.imgOk}}" class="tile-img" src="{{item.img}}" mode="aspectFill" data-tile="{{item.tile}}" binderror="onTileImgError"></image>
-            <text wx:else class="tile-txt">{{item.name}}</text>
+            <!--
+              牌面优先级：**CDN 图片 → 矢量文字**。
+              图片来自后端 `/api/tiles` 清单（代码包零图片，见 utils/tileimg.js）；
+              没取到清单、或单张加载失败（binderror 会把该张的 cdn 置空），
+              就落回矢量牌面 —— 风箭牌只画一个字，数牌画「数字 + 花色」。
+            -->
+            <image
+              wx:if="{{item.cdn}}"
+              class="tile-img"
+              src="{{item.cdn}}"
+              mode="aspectFill"
+              data-tile="{{item.tile}}"
+              binderror="onTileImgError"
+            ></image>
+            <block wx:else>
+              <block wx:if="{{item.honor}}">
+                <text class="tile-honor">{{item.suitChar}}</text>
+              </block>
+              <block wx:else>
+                <text class="tile-rank">{{item.rank}}</text>
+                <text class="tile-suit">{{item.suitChar}}</text>
+              </block>
+            </block>
           </view>
         </view>
       </scroll-view>
@@ -197,16 +220,8 @@
     </view>
   </view>
 
-  <!-- 掷骰覆盖层 -->
-  <view class="layer" wx:if="{{diceShown}}">
-    <view class="dice-box">
-      <view class="dice-row">
-        <view class="die-big">{{die1}}</view>
-        <view class="die-big">{{die2}}</view>
-      </view>
-      <view class="dice-msg">{{diceMsg}}</view>
-    </view>
-  </view>
+  <!-- 掷骰覆盖层（与大厅共用模板 templates/dice.wxml；样式在 app.wxss） -->
+  <template is="dice" data="{{diceShown, diceMsg, dice}}" />
 
   <!-- 互动表情面板 -->
   <view class="layer" wx:if="{{emoteShown}}">

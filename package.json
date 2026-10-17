@@ -10,7 +10,7 @@
     "start": "tsx packages/server/src/index.ts",
     "typecheck": "tsc --noEmit",
     "build:mp": "node scripts/mp_build_shared.mjs",
-    "prepare:mp": "node scripts/mp_prepare_assets.mjs"
+    "build:cdn-tiles": "node scripts/gen_cdn_tiles.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",

@@ -21,6 +21,82 @@ let autoResume = false;
 /** 「服务端不认识的消息」只打印一次（见 case 'error' 的未知消息分支） */
 let unknownWarned = false;
 
+/**
+ * 跳转合并（2026-10-18 修「已经开始下一局却卡在准备界面」）。
+ *
+ * 服务端在「点下一局 / 全员准备」这类时机，会在**同一毫秒**内连发两条消息：
+ * 大厅态 `state`（收桌）+ 新一局的 `game`。若收到一条就立刻 `redirectTo`：
+ *   1. `state` 先把人从对局页踹回大厅；
+ *   2. 紧接着的 `game` 落在**正在销毁**的对局页上（`current` 还是旧页），
+ *      回调打进死页面 → 不跳转；
+ *   3. 人停在准备界面，而新一局正在等玩家掷骰 → 之后不再有 `game` 广播 → 永久卡死。
+ * 所以跳转统一走 `navigate()`：压到本 tick 末，**只保留最后一个目标**。
+ */
+let navTarget = null;
+let navTimer = null;
+/** 正在跳往的页面名（落地前不再重复跳；由新页 attach 清空） */
+let navInFlight = null;
+
+/** 当前「认为」自己在哪一页：**待跳目标 > 在途目标 > 当前页**（旧页正在销毁，不可信） */
+function destName() {
+  if (navTarget) return navTarget.name;
+  if (navInFlight) return navInFlight;
+  return current ? current.name : null;
+}
+
+function navigate(name, url) {
+  if (navInFlight === name) return;
+  navTarget = { name, url };
+  if (navTimer) return;
+  navTimer = setTimeout(flushNav, 0);
+}
+
+function flushNav() {
+  navTimer = null;
+  const t = navTarget;
+  navTarget = null;
+  if (!t) return;
+  if (navInFlight === t.name) return;
+  if (navInFlight && navInFlight !== t.name) {
+    // 上一次跳转还没落地：先让它完成，60ms 后再补这一次（同时发两个 redirectTo 会被吞）
+    navTarget = t;
+    navTimer = setTimeout(flushNav, 60);
+    return;
+  }
+  // 转场淡出（2026-10-18）：redirectTo 是硬切，直接换页会有一次跳变闪动。
+  // 先把当前页根节点淡出（.page-leaving，160ms）再跳，配合新页的 220ms 淡入，
+  // 两次硬切缝成一次交叉溶解。只在页面声明了 pageLeaving 数据位时启用（home/lobby/game）。
+  const cur = current && current.ctx;
+  if (cur && cur.data && cur.data.pageLeaving === false) {
+    // 先占住在途目标：淡出的 170ms 窗口内 destName 以目标页为准，
+    // 防止 state→game 竞态在淡出窗口里回潮（见上方「跳转合并」）
+    navInFlight = t.name;
+    cur.setData({ pageLeaving: true });
+    setTimeout(() => {
+      // 淡出期间可能又来了新目标（旧服务端 state→game 连发）：以最新的为准
+      const latest = navTarget && navTarget.name !== t.name ? navTarget : t;
+      navTarget = null;
+      wx.redirectTo({
+        url: latest.url,
+        fail: () => {
+          navInFlight = null;
+          current = null;
+        },
+      });
+    }, 170);
+    return;
+  }
+  navInFlight = t.name;
+  wx.redirectTo({
+    url: t.url,
+    fail: () => {
+      // 跳转失败：把路由交还 ensureCurrent 自愈，别让 current 停在死页面上
+      navInFlight = null;
+      current = null;
+    },
+  });
+}
+
 function call(hook, arg) {
   if (current && current.ctx && typeof current.ctx[hook] === 'function') {
     current.ctx[hook](arg);
@@ -91,8 +167,8 @@ function handle(msg) {
       store.set(store.KEYS.token, msg.token);
       store.set(store.KEYS.room, msg.code);
       net.setInRoom(true);
-      if (!current || current.name !== 'lobby') {
-        wx.redirectTo({ url: '/pages/lobby/lobby' });
+      if (destName() !== 'lobby') {
+        navigate('lobby', '/pages/lobby/lobby');
         return;
       }
       call('onState', msg);
@@ -105,8 +181,8 @@ function handle(msg) {
       g.roomCode = msg.view.code;
       if (msg.view.variant) g.variant = msg.view.variant;
       net.setInRoom(true);
-      if (!current || current.name !== 'game') {
-        wx.redirectTo({ url: '/pages/game/game' });
+      if (destName() !== 'game') {
+        navigate('game', '/pages/game/game');
         return;
       }
       call('onGame', msg.view);
@@ -146,8 +222,11 @@ module.exports = {
   /** 页面 onShow 时挂载自己（同名钩子会被调用） */
   attach(name, ctx) {
     current = { name, ctx };
+    navInFlight = null; // 跳转已落地
     net.setMessageHandler(handle);
     net.setStatusHandler((s) => call('onNetStatus', s));
+    // 落地的页和「最后一条消息想去的地方」不一致（同 tick 内 state→game 的竞态）→ 再补跳一次
+    if (navTarget && navTarget.name !== name) navigate(navTarget.name, navTarget.url);
   },
   /**
    * 页面 onHide / onUnload 时摘除自己。**必须传 this 做归属校验**（2026-10-17 修复）：
@@ -162,6 +241,19 @@ module.exports = {
   /** 房间内聊天历史（跨页面保留） */
   chatHistory() {
     return app().chatHistory;
+  },
+  /**
+   * 兜底自救：服务端明确回「对局进行中」而人还停在大厅时，回牌桌。
+   *
+   * 光跳页面不够 —— 卡住时 `lastGameView` 往往已被 `state` 清成 null，牌桌是空的，
+   * 而且新一局可能正等着本人掷骰（没有后续广播）。所以顺带用本地 token 发一次
+   * `resume`：服务端在 `playing` 阶段回 resume 会广播一次 `game`，视图就补回来了。
+   */
+  recoverGame() {
+    if (destName() === 'game') return;
+    navigate('game', '/pages/game/game');
+    const token = store.get(store.KEYS.token, '');
+    if (token) net.connectAndSend({ t: 'resume', token });
   },
   resetChat() {
     app().chatHistory = [];

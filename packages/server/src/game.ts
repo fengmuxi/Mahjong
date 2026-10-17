@@ -1199,7 +1199,9 @@ export class Game {
     if (!jing) return null;
     const concealed = via === 'zimo' ? [...this.hands[seat]] : [...this.hands[seat], tile!];
     const gankai = via === 'zimo' && this.gangDrawJustNow;
-    const f = gzAnalyzeWin(concealed, this.melds[seat], jing, gankai);
+    // 胡的那张牌：自摸 = 刚摸那张（精吊判定「将牌 = {精, 胡牌张}」必需，见 gzwin.ts）
+    const winTile = via === 'zimo' ? this.lastDrawn : tile;
+    const f = gzAnalyzeWin(concealed, this.melds[seat], jing, gankai, winTile);
     if (!f.valid) return null;
 
     // 天和（确认口径）：庄家起手 14 张即胡牌牌型；地和：庄家打出的第一张牌被闲家胡（仅此一种）
@@ -1357,9 +1359,10 @@ export class Game {
       s === 'shisanlan' && info.qixing ? '七星十三烂' : shapeLabel(s),
     );
     if (this.gz && info.gz) {
-      // 赣州：有宝走精吊路线（+5）、无宝德国（+8）（§6.6）
-      if (info.gz.hasJing) labels.push('精吊');
-      else labels.push('德国');
+      // 赣州（§6.5/6.6 + 2026-10-18 口径）：精吊 +5、德国 +8（无精 / 精归位 /
+      // 明面精与本张同面成对）；精吊德国同成立时两项都算（+13）；配将平胡都不加
+      if (info.gz.jingdiao) labels.push('精吊');
+      if (info.gz.german) labels.push('德国');
       if (info.dezhongde) labels.push('德中德');
     } else {
       if (info.dezhongde) labels.push('德中德');
@@ -1448,15 +1451,15 @@ export class Game {
     return out;
   }
 
-  /** 胡牌分（§6.1/6.4/6.6）：底分 + 杠开8 + 精吊5/德国8，德中德 ×4；天地胡 40 + 5/8 */
+  /** 胡牌分（§6.1/6.4/6.6）：底分 + 杠开8 + 精吊5 + 德国8（可同时成立：明面精与本张
+   *  同面成对时精吊德国都算，+13）；配将平胡（差将摸精硬凑将）两项都不加；德中德 ×4 */
   private gzPatternScore(wi: WinInfo): number {
     const f = wi.gz;
     if (!f) return 0;
     const base = wi.tiandi ? GZ_CONFIG.patternBase.tiandi : f.patternBase;
-    let score =
-      base +
-      (wi.gankai ? GZ_CONFIG.gankaiBonus : 0) +
-      (f.hasJing ? GZ_CONFIG.jingdiaoBonus : GZ_CONFIG.germanBonus);
+    let score = base + (wi.gankai ? GZ_CONFIG.gankaiBonus : 0);
+    if (f.jingdiao) score += GZ_CONFIG.jingdiaoBonus;
+    if (f.german) score += GZ_CONFIG.germanBonus;
     if (wi.dezhongde && !wi.tiandi) score *= GZ_CONFIG.dezhongdeMult;
     return score;
   }

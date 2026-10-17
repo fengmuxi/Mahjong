@@ -23,6 +23,18 @@ import { Game, type GameEvent } from './game.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(__dirname, '../../client/dist');
+/**
+ * 牌面 CDN 资源目录（`npm run build:cdn-tiles` 产出）。
+ *
+ * 为什么不进代码包：官方代码包体检要求**图片资源合计 ≤ 200KB**、主包 < 1.5MB，
+ * 34 张牌面无论怎么压都塞不进（93×135 的 PNG 也有 731KB）。改为服务端托管 + 小程序
+ * 联网加载：包体 0 字节，流量走 CDN（34 张 WebP 共约 251KB，带长缓存）。
+ */
+const TILES_DIR = path.resolve(__dirname, '../public/tiles');
+/** 对外 base：留空表示「与接口同源」，由小程序自己拼绝对地址 */
+const CDN_BASE = process.env.MAHJONG_CDN || '';
+/** 资源版本号：换了牌面美术就改它，客户端缓存会自动失效 */
+const TILES_VER = process.env.MAHJONG_TILES_VER || 'v1';
 const PORT = Number(process.env.PORT ?? 3130);
 const TURN_MS = Number(process.env.MAHJONG_TURN_MS ?? 15000);
 /** 掉线托管：回合者无连接时的自动出牌等待 */
@@ -97,6 +109,7 @@ const MIME: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.webmanifest': 'application/manifest+json',
   '.json': 'application/json; charset=utf-8',
@@ -578,8 +591,16 @@ function finalizeIfReady(room: Room): void {
 
   // 展示期间仍未重连的 → 离座（机器人保留）
   if (!pruneGonePlayers(room)) return;
+
+  // 能立刻开下一局就**不要再广播大厅态**：客户端是三个独立页面，
+  // 「大厅（redirectTo lobby）+ 新一局（redirectTo game）」同一毫秒连发会互相打架 ——
+  // 后到的 game 落在正在销毁的对局页上，人卡在大厅，而新一局正等着他掷骰 → 永久卡死。
+  // 大厅所需的一切（分数、昵称、庄家）game 视图里都有，跳过广播没有信息损失。
+  if (canStart(room)) {
+    startGame(room);
+    return;
+  }
   broadcastLobby(room);
-  if (canStart(room)) startGame(room); // 4 人默认就绪且已定庄 → 直接开下一局
 }
 
 function applyGameEvents(room: Room, events: GameEvent[]): void {
@@ -1043,9 +1064,19 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       return;
     }
     case 'resume': {
-      if (binding.has(ws)) {
-        send(ws, { t: 'error', reason: '你已经在房间里了' });
-        return;
+      const bound = binding.get(ws);
+      if (bound) {
+        // 同一条连接重复 resume 是**合法的重同步**（客户端「人卡在大厅但牌局在跑」时
+        // 会发它把当前视图要回来，见 utils/room.js 的 recoverGame）。座位对得上就照常回，
+        // 别报「你已经在房间里了」把自救链路堵死。
+        const same = (() => {
+          const r = tokens.get(String(msg.token ?? ''));
+          return !!r && r.code === bound.code && r.seat === bound.seat;
+        })();
+        if (!same) {
+          send(ws, { t: 'error', reason: '你已经在房间里了' });
+          return;
+        }
       }
       const rec = tokens.get(String(msg.token ?? ''));
       const room = rec ? rooms.get(rec.code) : null;
@@ -1054,8 +1085,9 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         send(ws, { t: 'error', reason: '会话已失效，请重新加入房间' });
         return;
       }
+      const sameWs = player.ws === ws;
       // 换设备登录：顶掉旧连接
-      if (player.ws && player.ws !== ws) {
+      if (player.ws && !sameWs) {
         binding.delete(player.ws);
         player.ws.close();
       }
@@ -1065,7 +1097,7 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         clearTimeout(player.reconTimer);
         player.reconTimer = null;
       }
-      broadcastEvent(room, `${playerName(room, rec.seat)} 重新连接`);
+      if (!sameWs) broadcastEvent(room, `${playerName(room, rec.seat)} 重新连接`);
       if (room.game && room.game.phase === 'playing') {
         broadcastGame(room);
         syncAuto(room);
@@ -1274,14 +1306,21 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       }
       p.ready = Boolean(msg.ready);
       if (displaying(room)) {
-        // 摊牌展示中：只回自己的大厅状态（不打断他人看牌）
-        send(ws, lobbyState(room, b.seat));
-        if (p.ready) finalizeIfReady(room);
+        // 摊牌展示中：只回自己的大厅状态（不打断他人看牌）。
+        // 若这一下正好凑齐所有人 → finalizeIfReady 直接开下一局，那条 game 才是客户端
+        // 该走的路；此时再补一条 state 会把它踹回大厅（同 finalizeIfReady 的说明）。
+        if (p.ready) {
+          finalizeIfReady(room);
+          if (displaying(room)) send(ws, lobbyState(room, b.seat));
+        } else {
+          send(ws, lobbyState(room, b.seat));
+        }
         return;
       }
       broadcastEvent(room, `${p.name}${p.ready ? ' 已准备' : ' 取消准备'}`);
-      broadcastLobby(room);
+      // 满员就绪 → 直接开局：**不要再先广播大厅态**（见 finalizeIfReady 里的同款说明）
       if (!room.game && room.phase === 'lobby' && canStart(room)) startGame(room);
+      else broadcastLobby(room);
       return;
     }
     case 'nextRound': {
@@ -1294,8 +1333,10 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       const p = room.players.find((x) => x.seat === b.seat);
       if (!p) return;
       p.ready = true; // 点「下一局」= 默认就绪
-      send(ws, lobbyState(room, b.seat));
       finalizeIfReady(room);
+      // 没开成（还有别人没点）才回大厅态；开成了会收到 game，此时再甩一条 state
+      // 就会把客户端往大厅踹（用户报「已经开始下一局却卡在准备界面」）。
+      if (displaying(room)) send(ws, lobbyState(room, b.seat));
       return;
     }
     case 'abort': {
@@ -1551,12 +1592,44 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
 
 const server = http.createServer((req, res) => {
   try {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+
+    // 牌面资源清单：`GET /api/tiles` → { version, base, tiles: ['t00.webp', …] }
+    // base 为空时，小程序用接口自身的 origin 拼出绝对地址。
+    if (url.pathname === '/api/tiles') {
+      const tiles = fs.existsSync(TILES_DIR)
+        ? fs.readdirSync(TILES_DIR).filter((f) => /^t\d{2}\.webp$/.test(f)).sort()
+        : [];
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        // 清单本身要能被刷新（换版本时立刻生效），但缓存一下能省掉每次进房的往返
+        'cache-control': 'public, max-age=300',
+      });
+      res.end(JSON.stringify({ version: TILES_VER, base: CDN_BASE, tiles }));
+      return;
+    }
+
+    // 牌面静态资源 `/tiles/tNN.webp`：内容不变，可以长缓存（版本升级走清单里的 version）
+    if (url.pathname.startsWith('/tiles/')) {
+      const name = path.basename(decodeURIComponent(url.pathname));
+      const file = path.join(TILES_DIR, name);
+      if (!/^t\d{2}\.webp$/.test(name) || !fs.existsSync(file)) {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': 'image/webp',
+        'cache-control': 'public, max-age=31536000, immutable',
+      });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+
     if (!fs.existsSync(DIST)) {
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('客户端尚未构建：请先运行 npm run build');
       return;
     }
-    const url = new URL(req.url ?? '/', 'http://localhost');
     let file = path.normalize(path.join(DIST, decodeURIComponent(url.pathname)));
     if (file !== DIST && !file.startsWith(DIST + path.sep)) {
       res.writeHead(403).end();

@@ -134,12 +134,12 @@ packages/miniapp/       ← 新增：原生小程序工程
       ├── app.js / app.json / app.wxss / sitemap.json
       ├── pages/        三个页面（home / lobby / game）
       ├── utils/        网络 / 存储 / 牌桌渲染 / 牌面加载
-      ├── lib/shared/   由 npm run build:mp 产出（CommonJS JS）
-      └── tiles/        牌面贴图（npm run prepare:mp 产出，压缩后 ≈0.7MB）
+      └── lib/shared/   由 npm run build:mp 产出（CommonJS JS）
+      （无任何图片资源：牌面为纯矢量绘制，见 §10.8⑯）
 ```
 
 > 实施时**取消了分包**：`pages: []` 的纯资源分包不会被注册，`preloadRule` 会报「未找到」导致模拟器启动失败；
-> 压缩后牌面仅 731KB，与代码合计 954KB，分包已无收益。详见 §10.3。
+> 后来牌面改为纯矢量绘制，主包已降到约 250KB（无图片资源），分包更无必要。详见 §10.3 / §10.8⑯。
 
 新目录挂入现有单仓，构建隔离（`--module commonjs --target ES2017`，产物落 `miniprogram/lib/shared/`），不污染现有 vite/tsc 流程；`packages/shared` 的规则逻辑被 web 与小程序**共用同一份**，彻底杜绝两端规则漂移（延续项目"front 只渲染"铁律）。
 
@@ -289,17 +289,14 @@ packages/miniapp/
       store.js      localStorage → wx.Storage（key 与 web 端一致）
       net.js        SocketTask 单例 + 指数退避重连 + 应用级心跳
       room.js       服务端消息路由（state→大厅 / game→对局 / 其余回调当前页面）
-      table.js      Canvas 2D 牌桌（移植自 client/src/table.ts）
-      tiles.js      canvas.createImage() 加载牌面贴图
+      table.js      Canvas 2D 牌桌（移植自 client/src/table.ts，牌面纯矢量）
       ui.js         toast / confirm（替代 window.confirm）
     pages/home/     分步向导（含分享链接预填）
     pages/lobby/    房间：座位/换位/准备/机器人/定庄骰/玩法切换/分享
     pages/game/     对局：画布 + HUD + 控件 + 手牌条 + 聊天/记录 + 结算
-    tiles/          牌面贴图（npm run prepare:mp 生成，≈0.7MB，入主包）
     project.config.json / project.private.config.json   开发者工具工程配置（private 已 gitignore）
 scripts/
   mp_build_shared.mjs    shared → CommonJS 产物 + 导出自检
-  mp_prepare_assets.mjs  牌面 PNG 降采样重编码入分包（4.42MB → 731KB）
 ```
 
 ### 10.2 构建与校验
@@ -307,7 +304,6 @@ scripts/
 | 目的 | 命令 |
 |---|---|
 | 编译 shared 入小程序 | `npm run build:mp` |
-| 生成牌面分包资源 | `npm run prepare:mp` |
 | 类型检查（含服务端改动） | `npm run typecheck` |
 | 打开工程 | 微信开发者工具 → 导入 **`packages/miniapp/miniprogram`**（app.json 所在目录即项目根；首次导入后工具会生成 `project.config.json`/`project.private.config.json`） |
 
@@ -322,7 +318,7 @@ scripts/
 
 | # | 偏离 | 原因 |
 |---|---|---|
-| 1 | **牌面资源最终并入主包 `miniprogram/tiles/`，不设分包** | 实测：`pages: []` 的纯资源分包**不会被注册**，`app.json` 的 `preloadRule` 直接报「`tiles/` 未找到」，模拟器启动失败。压缩后牌面仅 731KB，分包已无体积收益（合计 954KB ≪ 2MB），故按本条预案并入主包并删除 `subpackages`/`preloadRule` |
+| 1 | **牌面资源最终并入主包 `miniprogram/tiles/`，不设分包** | 实测：`pages: []` 的纯资源分包**不会被注册**，`app.json` 的 `preloadRule` 直接报「`tiles/` 未找到」，模拟器启动失败。当时压缩后牌面 731KB，分包已无体积收益（合计 954KB ≪ 2MB），故并入主包并删除 `subpackages`/`preloadRule`；**后续牌面改纯矢量绘制，主包只剩约 250KB、零图片资源**（§10.8⑯） |
 | 2 | 分包方案整体取消 | 见 #1；将来资源增长超过 ~1.5MB 时，再引入「带真实页面的分包」（把对局页与贴图同包）或改走 CDN |
 | 3 | 背景纹理降级为 CSS 渐变（4 档选项保留，未走 CDN） | 原 4MB 平铺纹理不进包；方案 P5 允许「CDN 或 CSS 渐变」，取零依赖的最小实现 |
 | 4 | 掷骰覆盖层用大号数字代替 DOM 9 宫格骰面 | 方案未覆盖；翻滚/定格时序与文案与 web 端一致，视觉以最小实现补齐 |
@@ -860,7 +856,287 @@ abort 后只收 `event`+`state`、`ready=[-H,RB,RB,RB]`（人类未准备）、*
 而 `.game` 的底部内边距已经算过一份 —— 双份叠加让横屏多空出 ~21px（正好是 home indicator
 的高度），这段高度本该归画布。已删掉 `.board-overlay` 那份，牌桌直接变高。
 
-### 10.9 待办（按方案仍需处理）
+**⑮ 取消画布内的常驻手牌带 + 贴图升到 139×202（2026-10-17 深夜）**
+
+用户口径：「牌面偏小、看着吃力」，先做**低成本两项**（B + E）。
+
+**为什么删画布内手牌带（B）**：画布逻辑坐标恒 1280×640，屏上画布只有约 500 CSS px 宽
+（被高度锁死 + 2:1），**全局缩放 k≈0.39** —— 手牌 52×70 落到屏上只有 20×27，而画布下方
+DOM 手牌条是 42×54。同一副牌出现两套尺度，小那套还点不准（20px 触控面）。
+删掉后出牌只剩 DOM 手牌条一个入口，画布内只剩掷骰按钮与四角铭牌可点。
+
+改动要点（`utils/table.js`）：
+
+- 删 `drawMyHand()` / `drawDrawn()` / `markDeclare()` 及 `hits` / `canDiscard` / `handRect`
+  / `anim` / `prevDrawn*` 全部状态；`hitTest()` 的手牌分支一并删除。
+- `drawRevealHand()` **补 slot 0 分支**：摊牌时在画布下沿（`MY_HAND_Y=560`）用 34×44 只读
+  展示自己的明牌（角标/结算要看），矩形存进 `myRevealRect`，供 `winnerRect()` 画胡牌高亮。
+- 流局（`phase='over'` 但 `reveal=null`）也要出牌：`tiles` 回退到 `view.myTiles`。
+- `render()` 的循环从「reveal 时跳过 slot 0」改成「reveal 或（slot 0 且 over）都走
+  drawRevealHand」，否则流局时桌面底部空着。
+- `drawTurnCursor()` 的 slot 0 分支失效（没有手牌带可圈）——「轮到你」由状态行文案 +
+  DOM 手牌条的 `.hand-tray.active` 金色描边表达。
+
+**贴图升级（E）**：`scripts/mp_prepare_assets.mjs` 的 `TARGET_MAX` 135 → **203**
+（整数倍降采样，`factor = ceil(405/203) = 2`）→ 产物 **139×202**，34 张合计 1406KB
+（原 731KB），主包 **1.65MB / 2MB**（余量 361KB）。
+为什么必须升：DOM 手牌条要放到 46×60，**DPR 3 的真机需要 138×180 物理像素**，
+旧的 93×135 会被上采样 1.5 倍 → 手牌发虚。
+
+配套（`pages/game/game.wxss`）：手牌 42×54 → **46×60**（画布让出约 2% 宽度，手牌面积 +9.5%），
+`.tray-stack` 56 → 62px，窄屏档 34×44 → 38×49，并把 `@media (max-width: 620px)` 抬到
+**700px**（46px × 14 张 + 间距需 683px，667/568 这类窄横屏必须先缩档）。
+`estimateWrap()` 的 chrome 常量 130 → 136 同步。
+
+**验证**：用服务端（临时端口 3199，全机器人房）抓真实 `GameView`，在 Playwright 里加载
+`utils/table.js` 真实渲染三种形态 —— **playing / over-reveal / over-draw 全部零异常**；
+摊牌手牌矩形 `{x:390,y:555,w:500,h:54}` 居中不压角标；560 以下采样行确认对局中已无手牌带。
+`wcsc` 实编 + IDE 无头 compile `{"status":0}` + `npm run typecheck` 全通过。
+
+**⑯ 牌面不再进代码包：先纯矢量，后走 CDN（2026-10-18）**
+
+官方「代码质量 / 上传体检」报了三项未通过，前两项的根因都是**包里那 34 张牌面 PNG**：
+
+| 检查项 | 结果 | 真因 |
+|---|---|---|
+| 主包大小应小于 1.5M | 1.65MB ✗ | 牌面 PNG 占 1406KB |
+| 图片和音频资源应不超过 200K | ✗ | 同上（93×135 时也有 731KB，这条基本封死「位图进包」） |
+| 启用组件按需注入 | ✗ | `app.json` 缺 `lazyCodeLoading` |
+
+两步走：**第一步先把牌面改成纯矢量**（删 PNG、包体降到 281KB，让体检能过）；
+**第二步按用户要求接回位图，但走后端接口 + CDN**（见 ⑰）。矢量成为**永久兜底**。
+
+**处置**：
+
+1. **牌面全部改纯矢量绘制，删除全部图片资源**（`miniprogram/tiles/` 34 张 PNG、
+   `utils/tiles.js`、`scripts/mp_prepare_assets.mjs`、`npm run prepare:mp`）。
+   - `table.js` 的 `drawTile()` 去掉位图分支（`tileArt`/`drawImage`/clip），只保留矢量：
+     米白底 + 底部立体边 + 数字（`h*0.42` 粗体）+ 花色字（`h*0.3`），按花色着色
+     （万：数字墨色 + 萬字红 / 条全绿 / 筒全蓝 / 中红 / 发绿 / 白板画蓝框）；
+     牌背（`t === -1`）不变。
+   - DOM 手牌条（`game.wxml`/`game.wxss`）的 `<image>` 换成两个 `<text>`
+     （`.tile-rank` + `.tile-suit`，风箭牌单个 `.tile-honor`），色调用 `.tone-*` 类；
+     `syncHandTray()` 里给每张牌算出 `honor/rank/suitChar/tone`，删掉 `img/imgOk`
+     与 `onTileImgError`。
+   - **为什么不做「压到 200K 以内的位图」**：34 张牌面即使 93×135 也有 731KB，
+     要 ≤200KB 只能上 WebP/调色板量化（canvas `createImage` 对 WebP 的支持不确定，
+     且会有色带）；矢量方案零字节、任意 DPR 清晰、放大不受贴图分辨率限制，
+     小尺寸下（牌河 9~13 CSS px）矢量文字比缩小的写实贴图更好认。
+2. **`app.json` 加 `"lazyCodeLoading": "requiredComponents"`**（基础库 ≥ 2.11.1，本项目 3.17.4）。
+
+**结果**：主包 **1.65MB → 281KB**（`js 209 + wxss 43 + wxml 26 + json 2`，**图片 0 字节**），
+三条体检项全部可达标；顺带把之前「贴图分辨率不够、手牌发虚」的问题一并消除。
+
+**验证**：`table.js`/`game.js` 语法检查、WXML 配平 + 22 个处理器全在、
+IDE 无头 compile `{"status":0}`；另用 Playwright 把真实 `drawTile()` 在 24×32 / 32×42 /
+34×44 / 52×70 四档尺寸下画满 34 张牌，确认数字与花色字在最小尺寸下仍可分辨。
+
+**⑰ 牌面走「后端清单 + CDN」（2026-10-18）**
+
+用户口径：接口给地址、图片走 CDN。**代码包依旧零图片**（体检两条线不变），位图全部联网拿。
+
+**服务端**（`packages/server/src/index.ts`）
+
+| 路由 | 作用 |
+|---|---|
+| `GET /api/tiles` | 清单 `{ version, base, tiles: ['t00.webp', …] }`，`cache-control: max-age=300` |
+| `GET /tiles/tNN.webp` | 静态图，`cache-control: public, max-age=31536000, immutable` |
+
+- 资源目录 `packages/server/public/tiles/`，由 `npm run build:cdn-tiles`
+  （`scripts/gen_cdn_tiles.mjs`）从 `packages/client/src/assets/tiles` 降采样生成。
+- **格式与尺寸**：139×202 **WebP q=0.92，34 张共 251KB**（同尺寸 PNG 是 1971KB）。
+  139×202 的依据是手牌条 46×60 在 DPR 3 真机上需要 138×180 物理像素。
+- 环境变量：`MAHJONG_CDN`（独立 CDN 域名，空 = 与接口同源）、`MAHJONG_TILES_VER`（换美术抬它）。
+- 生成脚本用无头 Chromium 缩放 + 编码（`toDataURL('image/webp')`）：仓库没有 sharp/jimp
+  这类原生图像库，手写 PNG 编解码要 200 行；这只是**开发期构建脚本**。
+
+**小程序端**
+
+- `utils/config.js` 新增 `resolveApi()`：由 wss 地址**同域名推导**（`wss://x/ws` → `https://x`），
+  可用 `wx.setStorageSync('mj-api', 'https://cdn.example.com')` 覆盖成独立 CDN。
+- `utils/tileimg.js`：清单缓存到 storage（7 天 + 后台校验版本，**断网也能用上次清单**）→
+  `urlOf(t)` 给 DOM `<image>`、`preload(canvas)` 用 `createImage()` 预解码给画布。
+- `table.js` 的 `drawTile()` 恢复位图分支（`tileimg.art(t)`），**取不到就落回矢量**。
+- 手牌条 `wx:if="{{item.cdn}}"` 走 `<image>`，`wx:else` 走矢量文字；单张失败由
+  `onTileImgError` 只清该张的 `cdn`，其余继续用图。
+- 时序：`initCanvas()` 里 `tileimg.ensure → preload → 重画布 + 重跑 syncHandTray`（已存本帧参数）。
+
+⚠️ **域名必须在小程序后台登记两项**：`request 合法域名`（取清单）与
+`downloadFile 合法域名`（`<image>` 与 canvas `createImage` 取图）。没登记时真机只会拿到
+失败回调 —— 表现是**全部回退矢量牌面**（能玩，但没有贴图）。
+
+**验证**：shim 模拟 `wx.request` 跑通整链 —— `ws://…:3199/ws` → `http://…:3199` →
+`/api/tiles` 返回 34 个文件名 → `urlOf(0)` 取回 `HTTP 200 image/webp 6.9KB`；
+死域名 / 无效 CDN 域名两个场景都正确 `failed` 并回退矢量；`wss://majiang.dwzynj.top/ws`
+正确推导出 `https://majiang.dwzynj.top`（线上服务端**需重新部署**才有这两个路由，
+未部署期间客户端自动走矢量兜底）。另：WXML 配平 + 23 个处理器全在、wcsc 实编、
+IDE 无头 compile `{"status":0}`、主包 289KB 且图片 0 字节。
+
+**⑱ 掷骰动画对齐 web 端（2026-10-18）**
+
+用户口径：「打骰子的动画能不能仿照 web 端改造，现在看着太塑料了」。
+
+**原来的问题**：小程序只有一个 `.die-big` —— 米白方块 + 一个 44rpx 的大数字，没有点子、
+没有立体感、没有翻滚，`setInterval` 每 150ms 换一次数字。web 端是另一套：DOM 双骰 +
+九宫格点子 + 渐变立体阴影 + `@keyframes dice-tumble`（旋转 + 上下抛落 + 缩放）+ 定格文案。
+
+**移植做法**（两页共用，不再各写一份）：
+
+| 文件 | 作用 |
+|---|---|
+| `templates/dice.wxml` | `wx:template name="dice"`：`.layer > .dice-box > .dice-row > .die-slot(.die-shadow + .die > 3×.die-grid-row > 3×.pip-cell > .pip)` |
+| `utils/dice.js` | `dieGrid(v)`（点数 → 3×3 网格，0 空 / 1 黑 / 2 红，1、4 为红）、`pair(a,b,tumbling,land)` |
+| `app.wxss` | `.die` 渐变 + `box-shadow` 三层立体（外投影 + `inset 0 -3px` 底部厚边 + `inset 0 2px` 顶部高光）、`.pip` 内凹、`dice-tumble` / `dice-shadow` / `dice-land` 三组关键帧 |
+
+- 页面里 `<import src="/templates/dice.wxml" />` + `<template is="dice" data="{{diceShown, diceMsg, dice}}" />`，
+  `game.wxml` / `lobby.wxml` 原有的 `.dice-box` 结构与两页 wxss 里的 `.dice-box/.die-big/.dice-msg`
+  全部删除（样式统一上收到 `app.wxss`）。
+- **两枚错开相位**：`.die-slot.b` 上 `animation-delay: -0.17s`，两枚不会同步得像贴图。
+- **地面投影独立成层**：`.die-shadow` 自己跑 `dice-shadow`（抛得越高越小越淡）——
+  做成本体的 `box-shadow` 不会跟着翻滚动。
+- **定格回弹**：`tumble` 结束的同一帧切到 `.die.land`（`scale 1.14 → 0.95 → 1`，带过冲的
+  `cubic-bezier`），避免「突然停住」的塑料感。
+- 翻滚期随机面刷新从 150ms 收到 **100ms**；`wx:key="idx"` 保证 setData 不重建节点，
+  否则挂在 `.die` 上的翻滚动画每 100ms 就会从头播一次（看着像卡住）。
+- 紧凑档（`@media (max-height: 680px)`）骰子 **50px**、点子 10px、字号 12px；
+  rpx 档 96rpx（矮宽窗口里 rpx 会放大到离谱，必须按 px 兜一档）。
+
+**验证**：`dieGrid(1..6)` 逐点核对（点数个数与红点规则全部正确）；把 `app.wxss` 的样式与
+模板结构在 Chromium 里复刻截图，1–6 点观感正常、翻滚帧两枚角度不同；
+`wcc` 实编模板与两个页面 WXML exit 0、`wcsc` 实编 `app.wxss` OK、IDE 无头 compile `{"status":0}`。
+
+**⑲ 骰子加立体感（2026-10-18，⑱ 的后续）**
+
+用户口径：「骰子能不能加点立体感，现在就像平面骰子一样，加点阴影效果」。
+
+**为什么 ⑱ 之后仍然显平**：只有一个 `0 8rpx 18rpx` 的软投影 + 两条 inset。软投影只会让物体
+「浮起来」，读不出**厚度**；而骰子又是纯色浅面，缺少朝向信息 —— 三点加起来就是一张贴纸。
+
+**现在的三层深度线索**（全部挂在 `app.wxss` 的 `.die` / `.die-slot` / `.pip`）：
+
+1. **外形（朝向）**：`background` 两层 —— 左上高光斑 `radial-gradient(70% 56% at 22% 14%)` +
+   球面渐变 `radial-gradient(circle at 30% 24%, #fffdf7 → #dcd2bc)`。**高光必须放在 background 层**：
+   曾经做成 `::after` 覆盖层，结果把左上那枚点子（1 点唯一一枚、4 点第一枚）洗成灰粉色。
+2. **侧面（厚度）**：三段**实色硬偏移** `box-shadow: 4rpx 5rpx 0 / 6rpx 7rpx 0 / 8rpx 10rpx 0`
+   （`rgba(199,187,159,.98) → rgba(161,149,121,.9)`）。**这是关键**：模糊投影读作「悬空」，
+   实色偏移才读作「块」。三段而不是两段，台阶更密，像连续侧壁而不是叠了两张纸。
+3. **落影**：贴地紧影 + 大范围软影，**挂在 `.die-slot` 上而不是 `.die`** —— `box-shadow`
+   会跟着元素旋转，挂在骰子本体上时翻滚中阴影会绕着骰子转圈，一眼假；高度变化仍由
+   不旋转的 `.die-shadow` 椭圆（`dice-shadow` 关键帧）表达。
+4. **点子 = 钻孔**：`radial-gradient(circle at 36% 30%, …)` 深色渐变 + `inset 0 2rpx 3rpx`（内壁阴影）
+   + `inset 0 -1rpx 0 rgba(255,255,255,.18)`（孔底反光）+ 外侧 `0 1rpx 0 rgba(255,255,255,.55)`（孔口亮边）。
+
+紧凑档（`@media max-height:680px`，手机横屏实尺 50px）逐条给了 px 版（2/3/4px 三段 + 2/3/4px inset），
+两档数值同构。**注意 `.die::after` 已删除**，不要再加覆盖式高光。
+
+**验证**：写脚本把 `app.wxss` 里真实的骰子段（rpx 档 + 紧凑档）`rpx→px` 转换后灌进 Chromium，
+渲染 1–6 点与两枚「翻滚中」（旋转 30° / -140°）的帧，`deviceScaleFactor:4` 局部放大看边角；
+另渲染 `.dice-box` 完整卡片确认阴影没有糊到下方文案。`wcsc` 实编 `app.wxss` OK、IDE compile `{"status":0}`。
+
+**⑳ 下一局已开局，客户端却卡在准备界面（2026-10-18）**
+
+用户截图：大厅里堆着一排「⚠ 对局进行中，无法准备」，但新一局其实已经开起来了。
+
+**完整因果链**（点「下一局」触发）：
+
+1. 服务端 `finalizeIfReady()` 里是 **`broadcastLobby()` 紧接着 `startGame()`** —— 客户端在同一毫秒
+   连收 `state`（大厅）+ `game`（新一局）。`nextRound` 之前还先单发一条 `state`，共三条。
+2. 小程序是三个独立页面：收到 `state` 立刻 `redirectTo(lobby)`，把人从摊牌页踹回大厅；
+   紧接着的 `game` 落在**正在销毁**的对局页上（`current` 还是旧页），回调打进死页面 → 不跳转。
+3. 人停在大厅，而新一局正等**本人掷骰**（`ceremony.state = 'wait-roll'`）→ 之后不再有任何
+   `game` 广播 → 永久卡死。点「准备」只会刷「对局进行中，无法准备」。
+
+**修复（三层）**：
+
+- **服务端（根治）**：`finalizeIfReady()` / `ready` 分支改成「能直接开局就**不再广播大厅态**」——
+  大厅要的一切（分数、昵称、庄家）`game` 视图里都有，跳过广播没有信息损失；
+  `nextRound` 只在**没开成**（还有别人没点）时才回 `state`。同一毫秒的 state+game 不复存在。
+- **客户端 `utils/room.js`（兜底）**：新增 `navigate()` 跳转合并 —— `redirectTo` 压到本 tick 末、
+  **只保留最后一个目标**，并引入 `navInFlight`（在途目标优先于 `current` 判断自己在哪页，
+  由新页 `attach` 清空；跳转失败清 `current` 交给 `ensureCurrent` 自愈）。这样无论服务端
+  消息怎么排序，客户端最终都落在**最后一条消息**对应的页面。
+- **客户端自救**：大厅 `onError` 看到「对局进行中」→ `room.recoverGame()`：跳回对局页 +
+  用本地 token 发一次 `resume` 把当前视图要回来。为此服务端放开了 `resume` 的
+  「你已经在房间里了」限制 —— **同连接、同座位**的重复 resume 视为合法重同步（换设备顶号语义不变）。
+
+**连带修复（别漏）**：以前「结算浮层」是靠 `state` 里 `hideSettle()` 收掉的，现在开局不再广播
+大厅态，两端都要靠 `game` 自己收 —— web `main.ts` 的 `renderGame()`（`v.phase !== 'over'` 时
+`hideSettle()`）、小程序 `game.js` 的 `renderGame()`（`settleShown` 置 false 后**必须走
+`syncModal()`**，`modalOpen` 是六个浮层标志的取或，直接 setData 会漏掉画布 `.on-modal` 的摘除）。
+
+**验证**：
+
+- 消息时序（临时服务端 + WS 机器人局）：修复后点「下一局」只收到一条
+  `game phase=playing ceremony=wait-roll`，不再有 `state`。
+- 路由单测（vm 加载真实 `room.js` + 假 `wx`/假页面栈，7 条全过）：`state+state+game` 只跳一次且
+  落到对局页；只收 `state` 回大厅；大厅收 `game` 进对局；`game→state` 落大厅；同页不重复跳；
+  对局页收 `game` 不跳；`recoverGame()` 回牌桌。
+- `resume` 自救链路（真服务端）：`playing` 阶段发 `resume` 能拿回 `game` 视图（修复前回
+  「你已经在房间里了」）。
+- `typecheck` 零报错、`NODE_OPTIONS= npm run build` 通过、IDE compile `{"status":0}`。
+
+### 10.9 牌桌信息密度重排：删对手手牌背 · 牌河吃满四条边 · 铭牌加「手牌 N」（2026-10-18）
+
+用户反馈（附截图）：「牌河牌张太小看不清，框选那一片全是其他玩家的手牌，把空间让给牌河；
+核心元素等比放大；铭牌上要有剩余手牌数并标明是手牌不是牌河。」
+
+**真因**：`table.js` 沿用了 web 端早期布局 —— 四条边（每条 22~32 逻辑宽）画的是各家**手牌背**，
+牌河被挤在牌墙环内只剩 **24×32**。画布逻辑 1280 宽在真机上约 500 CSS px，牌河单张落到屏上只有
+**9×12**，花色和数字根本认不出。
+
+**改动（全部在画布逻辑坐标 1280×640 内，视觉风格不动）**
+
+| 元素 | 改前 | 改后 |
+|---|---|---|
+| 对手手牌背 | 四条边各 13 张 / 22×30，占满边带 | **整条删除**（张数改由铭牌显示） |
+| 牌河 | 环内，24×32 | **四条边**，46×58（间距 48/60）；上/下 13×2=26 张，左右 5×8=40 张 |
+| 副露 | 环外贴边（20 / 1260） | **环内四侧** 40×52：自己 y400、对家 y160（右对齐 950），上/下家竖排 x330 / 右对齐 955（起点 y216） |
+| 铭牌 | 130×40，第二行只在不轮到自己时显示「N 张」 | **168×50**，第二行左「手牌 N」胶囊 + 右状态（胡牌！/托管中/出牌中，当前出牌方边框呼吸） |
+| 结算横幅 | 画布顶端 y4（440×44） | 环内 y214（340×40） |
+| 回合光标 | 围着已删除的手牌带画金框 + 箭头 | **删除**（改由铭牌边框呼吸表达） |
+| DOM 手牌（紧凑档） | 46×60，数字 22 | **46×66**，数字 25 / 花色 12 / 风箭 27；≤700px 退 39×55 |
+
+**「手牌 N」的口径**：数值取 `view.counts`（服务端 `hands.map(h => h.length)`），摸牌 +1、出牌 −1、
+碰/杠 −n，随每个状态帧自动刷新；发牌仪式期间用 `effCounts`（随发牌动画递增）。文案**必须带「手牌」二字** ——
+牌河现在占四条边，光写「13 张」会被读成弃牌数。
+
+**踩到并修掉的三个几何坑**
+
+1. **结算横幅压牌**：横幅原来在画布顶端（y4），而删掉手牌背后「对家摊牌」正好铺在顶边 —— 实测挡住 9 张明牌。
+   挪到环内 y214 后：对家副露 160~212、中心盘从 256 起、左右竖排副露止于 x450 / 始于 x835，横幅 470~810 全避开。
+2. **回合光标浮在牌河上**：`drawTurnCursor()` 按 `counts*34` 在四条边画金框，手牌带没了之后它就是一串空框 + 箭头，
+   直接飘在牌河上方。整方法删除。
+3. **副露互叠**：对家横排（右对齐 950，最多 4 组 516 宽）与下家竖排（右对齐 955）原本都从 y160 起 → 3 组以上就叠。
+   竖排起点改 **216**（对家横排底 212 之下）。极端情况（左右 4 组 + 自己 3 组）仍会在环内下沿擦到约 44px，已接受。
+
+**验证**（无自动化测试，靠真实视图 + 真实画布）
+
+- 起临时服务端（`PORT=3201 MAHJONG_TURN_MS=1200 MAHJONG_AUTO_MS=120 …` 把机器人节奏调快），
+  WS 走 `create → addBot×3 → rollDealer → setAuto → ready`，由服务端把一局打完并抓真实 `GameView`；
+  顺带验证 `counts` 序列（`13/13/13/13 → 14/13/13/13 → 13/14/…`、碰后 `-2`、出牌 `-1`）。
+- 自写 CommonJS mini-bundler 把 `utils/table.js` + `lib/shared/*` + `tileimg.js` + `config.js` 打包注入 Chromium，
+  `new Table(canvas, 2).render(view)` 在真实 1280×640 画布上截图；`page.screenshot({clip})` 做局部放大看铭牌/牌河。
+- **极限帧**：真实视图改写成「牌河 18/14/12/9 + 每家 3 组副露 + 超长昵称 + 三位数总分」验证最坏兜底；
+  另造「对家 14 张摊牌」帧验证顶边两行明牌不碰横幅、赢家高亮框被夹到 `y=0` 不被裁。
+- `node --check utils/table.js`、`wcsc` 实编 `game.wxss`/`app.wxss`、IDE 无头 compile `{"status":0}`。
+
+**二次放大（2026-10-18 晚，用户截图圈中心盘「字号过小」）**
+
+| 元素 | 改前 | 改后 |
+|---|---|---|
+| 中心信息盘 | 220×140 @ (530,256)，牌墙字 12 / 风位 14-15 / 骰子 32 / 精牌 34×42 | **288×140 @ (496,256)**：牌墙字 14、风位 17-18（庄标 34×26）、骰子 **44**、精牌 **46×58**（与牌河同尺寸）、正/副精标签 12 |
+| 掷骰按钮 | 140×44，字 17 | **190×60**，字 22（等待文案 15） |
+| 四角铭牌 | 168×50 @ INSET 16，名字 11 / 手牌数字 14 / 状态 12 | **220×54 @ INSET 14**：名字 13、手牌数字 16、状态 13-14、庄标 24×20 |
+
+几何依据（放大后仍不压牌）：中心盘**高度不动**（上和对家副露 y≤212、下和自己副露 y≥400），
+只向两侧扩——左右副露最宽 490 / 795 起，288 宽正好嵌中间；铭牌高 54（INSET 14 → 占 y14..68 /
+y572..626），左右牌河 y70..548、上下牌河 x≥328，四角让位依旧成立。精牌「其余 10 张结算揭晓」
+从盘外 (640,400) 挪进盘内，避免悬在盘外。结算横幅（y214..254）与中心盘（y256 起）刚好错开。
+
+**没动的地方**：`packages/client/src/table.ts`（web 端）仍是旧布局（RIVER 24×32、四条边手牌背、画布内
+`drawMyHand`）—— 两端渲染已分叉，要同步需单独一轮。
+
+### 10.10 待办（按方案仍需处理）
 
 - [ ] **重新部署服务端**（`wss://majiang.dwzynj.top/ws`）：线上版本落后于仓库，不认识
       `{t:'ping'}`，也还没有 `未知消息：<t>` 的类型回显与「每连接只提示一次」。

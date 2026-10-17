@@ -525,9 +525,11 @@
   height: 92rpx;
   margin: 0 3rpx;
   border-radius: 8rpx;
-  background: #f6f2e7;
+  background: #f8f5ec;
   border: 2rpx solid #c9c2b0;
   display: flex;
+  /* 牌面是矢量文字：数牌两行（数字在上、花色在下），风箭牌一行大字 */
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   overflow: hidden;
@@ -548,60 +550,82 @@
   border-color: #e05a4a;
 }
 
-.tile-btn.pi {
-  border-color: #ff5722;
-}
-
-.tile-btn.fu {
+/*
+ * 精边框（正精橙 / 副精紫）优先级最高：出牌阶段 `.hand-tray.active` 会把所有手牌描成
+ * 金色边框（特异度同为 0,2,1，但这两条在它后面 → 覆盖金色），`.drawn`/`.frozen`/`.must`
+ * 特异度更低也会被覆盖 —— 「这是精」比「刚摸/金框/强制出牌」的信息更重要（2026-10-18）。
+ */
+.hand-tray .tile-btn.fu {
   border-color: #ab47bc;
 }
 
+.hand-tray .tile-btn.pi {
+  border-color: #ff5722;
+}
+
+/*
+ * 牌面（2026-10-18 起代码包零图片）：
+ *   · **优先 CDN 图片**（`.tile-img` 铺满牌位），地址由后端 `/api/tiles` 清单给出；
+ *   · 没取到清单 / 单张加载失败 → 矢量文字兜底：数牌两行（数字在上、花色在下），
+ *     风箭牌一行大字。色调按花色区分，小尺寸下靠颜色分辨。
+ * 为什么要兜底：官方体检「图片资源 ≤ 200KB、主包 < 1.5MB」，牌面只能走网络，
+ * 而域名可能没登记、网络可能不通 —— 兜底保证任何时候牌都看得见。
+ */
 .tile-img {
   width: 100%;
   height: 100%;
 }
-
-.tile-txt {
-  font-size: 22rpx;
+.tile-rank {
+  font-size: 40rpx;
   font-weight: 700;
-  color: #1a1a1a;
-  text-align: center;
+  line-height: 1;
+  color: #1a1a2e;
 }
 
-/* ---------- 掷骰 / 表情 / 结算（页内浮层） ---------- */
-.dice-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16rpx;
-  padding: 28rpx 44rpx;
-  border-radius: 16rpx;
-  background: rgba(20, 36, 28, 0.96);
-  border: 2rpx solid rgba(230, 193, 75, 0.4);
+.tile-suit {
+  font-size: 20rpx;
+  font-weight: 700;
+  line-height: 1;
+  margin-top: 2rpx;
+  color: #1a1a2e;
 }
 
-.dice-row {
-  display: flex;
-  gap: 24rpx;
-}
-
-.die-big {
-  width: 88rpx;
-  height: 88rpx;
-  line-height: 84rpx;
-  text-align: center;
-  border-radius: 14rpx;
-  background: #f7f3e8;
-  color: #1c1c2b;
+.tile-honor {
   font-size: 44rpx;
   font-weight: 700;
+  line-height: 1;
+  color: #1a1a2e;
 }
 
-.dice-msg {
-  font-size: 24rpx;
-  color: #f6e3a1;
+/* 万：数字墨色 + 萬字红色（与真实牌面同色系）；条全绿、筒全蓝 */
+.tone-m .tile-suit {
+  color: #c62828;
 }
 
+.tone-s .tile-rank,
+.tone-s .tile-suit {
+  color: #1b7f3b;
+}
+
+.tone-p .tile-rank,
+.tone-p .tile-suit {
+  color: #1f5fbf;
+}
+
+.tone-zhong .tile-honor {
+  color: #c62828;
+}
+
+.tone-fa .tile-honor {
+  color: #1b7f3b;
+}
+
+.tone-bai .tile-honor {
+  color: #1f5fbf;
+}
+
+/* ---------- 表情 / 结算（页内浮层） ----------
+   掷骰覆盖层已搬到 app.wxss + templates/dice.wxml（对局页与大厅页共用）。 */
 .emote-card {
   width: 640rpx;
 }
@@ -928,13 +952,19 @@
   }
 
   .tray-stack {
-    min-height: 56px;
+    min-height: 68px;
   }
 
+  /*
+   * 手牌 46×66（原 46×60）。**宽度总占位一分不变**（14 张 × 48 = 672 + 定张 8 = 680，
+   * 与 46×60 + 1.5px 边距时完全一样），所以不会让任何一台设备从「放得下」变成「要横滑」；
+   * 多出来的 6px 全给高度：46/66 = 0.697，几乎等于真实牌面比例 0.688（原来 0.767 偏方）。
+   * 牌面字号 +3px 是这次观感提升的主要来源（数字 25 / 花色 12 / 风箭 27）。
+   */
   .tile-btn {
-    width: 42px;
-    height: 54px;
-    margin: 0 1.5px;
+    width: 46px;
+    height: 66px;
+    margin: 0 1px;
     border-radius: 4px;
   }
 
@@ -942,8 +972,18 @@
     margin-left: 8px;
   }
 
-  .tile-txt {
-    font-size: 11px;
+  /* 牌面字号跟手牌尺寸走：46×66 下数字 25px / 花色 12px，风箭牌 27px */
+  .tile-rank {
+    font-size: 25px;
+  }
+
+  .tile-suit {
+    font-size: 12px;
+    margin-top: 1px;
+  }
+
+  .tile-honor {
+    font-size: 27px;
   }
 
   /* 浮层 */
@@ -968,23 +1008,6 @@
 
   .tbl-cell {
     padding: 3px 4px;
-  }
-
-  .dice-box {
-    padding: 14px 20px;
-    gap: 8px;
-  }
-
-  .die-big {
-    width: 44px;
-    height: 44px;
-    line-height: 42px;
-    font-size: 22px;
-    border-radius: 10px;
-  }
-
-  .dice-msg {
-    font-size: 12px;
   }
 
   .emote-card {
@@ -1044,18 +1067,33 @@
 }
 
 /*
- * 极窄横屏（如 568×320 CSS px 的老机型）：手牌 13~14 张一行放不下，
- * 缩小牌面兜底（scroll-view 能滚，此档只是让整排更容易一屏放下）。
+ * 窄横屏（≤700 CSS px）：手牌 13~14 张一行放不下，缩小牌面兜底
+ * （scroll-view 能滚，此档只是让整排更容易一屏放下）。
+ * 断点 620 → 700：手牌放大到 46px 后，14 张 + 间距需要 683px，
+ * 667/568 这类窄横屏必须先缩档，否则会横向溢出（虽然能滚，但看不全）。
  */
-@media (max-width: 620px) {
+@media (max-width: 700px) {
+  /* 极窄横屏（≤700px）：14 张放不下 46px，退到 39×55 —— 总占位 574px，667 也放得下 */
   .tile-btn {
-    width: 34px;
-    height: 44px;
+    width: 39px;
+    height: 55px;
     margin: 0 1px;
   }
 
   .tile-btn.drawn {
     margin-left: 6px;
+  }
+
+  .tile-rank {
+    font-size: 21px;
+  }
+
+  .tile-suit {
+    font-size: 10px;
+  }
+
+  .tile-honor {
+    font-size: 23px;
   }
 
   .controls button {
