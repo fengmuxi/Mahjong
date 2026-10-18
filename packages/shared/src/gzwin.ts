@@ -8,9 +8,10 @@
  *      **结构上就不可能拿精凑牌**——新增任何通配能力都必须先改 `gzIsWildcard`。
  *   2. **乱风**（§四）——**风、箭各自成组**：东南西北任意 3 张不同风成一组、中发白任意 3 张不同箭
  *      成一组，**风箭不可混**（东+南 可吃 西、不可吃 中）；字牌之间可以相吃；
- *   3. **有精胡牌受限**（§6.5）——手上有精只能：精吊（听牌时精已单张在手作将：将牌 =
- *      {精, 胡牌张}，或精对作将）/ 特殊牌型 / 精归位（精当本张用，视为德国）/
- *      配将平胡（差将摸精硬凑将，只按平胡结算不加精吊分，2026-10-18 澄清口径）；
+ *   3. **有精胡牌受限**（§6.5，2026-10-18 口径）——手上有精只能：精吊（听牌时精已单张在
+ *      手作将：将牌 = {精, 胡牌张}，或精对作将）/ 特殊牌型 / 精归位（精当本张用，视为德国）/
+ *      配将平胡（差将自摸摸精硬凑将，只按平胡结算不加分精吊分）。**点炮不允许平胡**——
+ *      有精时点炮胡只能走精吊 / 德国（精归位）/ 杠开 / 其他特殊牌型；
  *   4. **德国 = 手上无精**（§6.4），德中德 = 德国 + 大牌型（×4）。
  */
 
@@ -38,8 +39,9 @@ export interface GzWinFacts {
    */
   jingdiao: boolean;
   /**
-   * 配将平胡（2026-10-18 澄清口径）：将牌 = {精, 手上原有普通牌} —— 胡牌成立、
+   * 配将平胡（2026-10-18 口径）：将牌 = {精, 手上原有普通牌} —— 胡牌成立、
    * 但只按平胡底分结算（无精吊 +5）；要精吊须先打掉散牌留精单吊。
+   * **仅自摸成立**（差将自摸摸上精硬凑将）；点炮平胡一律禁止（§6.5）。
    */
   jingPairPlain: boolean;
   /** 德国：手上无精（§6.4）、精归位（§6.5③，+8），或将牌 = 明面精 + 同面本张成对
@@ -199,6 +201,8 @@ function jingKinds(j: GzJing): Tile[] {
  * @param gankai 是否杠上补牌胡（平胡豁免精吊限制，§6.6）
  * @param winTile 胡的那张牌（自摸 = 刚摸那张 / 点炮 = 被胡那张）。精吊判定（将牌 = {精, 胡牌张}）必需；
  *                缺省时只能判「精对作将」，配将一律按 jingPairPlain 处理
+ * @param via 胡牌来源（自摸 / 点炮）。点炮不允许配将平胡、不允许精吊——有精点炮只能走
+ *            德国（精全按本张的标准分解，特殊牌型按本张参与也在其中）（§6.5，2026-10-18 口径）
  */
 export function gzAnalyzeWin(
   concealed: Tile[],
@@ -206,6 +210,7 @@ export function gzAnalyzeWin(
   jing: GzJing,
   gankai: boolean,
   winTile?: Tile | null,
+  via: 'zimo' | 'ron' = 'zimo',
 ): GzWinFacts {
   const counts = tileCounts(concealed);
   const setsNeeded = 4 - melds.length;
@@ -288,7 +293,9 @@ export function gzAnalyzeWin(
         }
       }
     }
-    // ③ 配将（将牌 = {精, 手上原有普通牌}）：只保证胡牌成立，按平胡结算
+    // ③ 配将（将牌 = {精, 手上原有普通牌}）：只保证胡牌成立，按平胡结算；
+    //    仅自摸成立——点炮平胡一律禁止（§6.5，2026-10-18 口径），点炮必须走
+    //    精吊 / 精归位德国 / 杠开 / 其他特殊牌型
     if (!jingdiaoRuns && !jingdiaoTrips) {
       outer: for (const kind of kinds) {
         if (counts[kind] < 1) continue;
@@ -315,18 +322,24 @@ export function gzAnalyzeWin(
   if (jingdiaoTrips && !shapes.includes('big7')) shapes.push('big7');
   if (jingdiaoRuns && !shapes.includes('pinghu')) shapes.push('pinghu');
 
-  // 合法性（§6.5 + 2026-10-18 澄清）：无精 → 标准牌型；有精 → 精吊 / 特殊牌型 /
-  // 精归位（标准分解成立 = 精全按本张使用，§6.5③ 视为德国）/ 配将平胡（差将摸精）。
+  // 合法性（§6.5，2026-10-18 口径）：无精 → 标准牌型；自摸有精 → 精吊 / 特殊牌型 /
+  // 精归位（标准分解成立 = 精全按本张使用，§6.5③ 视为德国）/ 配将平胡（含杠开豁免）。
+  // **点炮有精 → 只认德国路线（standard = 精全按本张参与，特殊牌型按本张成也在其中）**：
+  // 纯精吊（将牌 = {精, 胡牌张任意} 或精对作将）与配将平胡一律不成立。
+  // 「单吊精胡到精本张」按下张成对属 standard → 点炮可胡，但只按德国结算（无精吊 +5）。
   const standard = pinghu || big7 || small7 || sls;
-  const guiwei = hasJing && !jingdiao && standard; // 精归位（配将平胡优先级更低，见下）
+  // 精吊标志只对自摸有效：点炮胡即便同型也不给「精吊」牌型与 +5（仅按德国/特殊结算）
+  const jingdiaoFlag = via === 'zimo' ? jingdiao : false;
+  const guiwei = hasJing && !jingdiaoFlag && standard; // 精归位（配将平胡优先级更低，见下）
   let valid: boolean;
   if (!hasJing) valid = shapes.length > 0;
+  else if (via === 'ron') valid = standard;
   else if (jingdiao) valid = true;
   else if (standard) valid = true;
-  else if (jingPairPlain) {
+  else if (jingPairPlain && via === 'zimo') {
     valid = true;
     if (!shapes.includes('pinghu')) shapes.push('pinghu');
-  } else valid = gankai && pinghu; // 杠开平胡豁免
+  } else valid = gankai && pinghu; // 杠开平胡豁免（杠开必自摸）
 
   // 七星十三烂（§6.1）
   let qixing = false;
@@ -348,7 +361,7 @@ export function gzAnalyzeWin(
   const german = !hasJing || guiwei || jingdiaoOnFace;
   // 德中德需看其余三家有没有精牌——胡型分析拿不到别家信息，由引擎判定（见 gzIsDezhongde）
 
-  return { valid, shapes, qixing, hasJing, jingdiao, jingPairPlain: jingPairPlain && !guiwei, german, patternBase };
+  return { valid, shapes, qixing, hasJing, jingdiao: jingdiaoFlag, jingPairPlain: jingPairPlain && !guiwei, german, patternBase };
 }
 
 /**

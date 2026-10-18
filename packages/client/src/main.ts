@@ -816,8 +816,11 @@ function handle(msg: ServerMsg): void {
       settleHideBtn.disabled = false;
       settleNextBtn.disabled = false;
     }
-    if (autoResume) {
+    if (autoResume || /已失效/.test(msg.reason)) {
+      // 自动重连失败，或房间已被服务端定时回收 / 解散 / 服务端重启：本地会话没救了，
+      // 无论当前停在哪一页都清掉会话回向导，并直接提示「房间已失效」
       autoResume = false;
+      inRoom = false;
       const savedRoom = localStorage.getItem('mj-room');
       localStorage.removeItem('mj-token');
       localStorage.removeItem('mj-room');
@@ -829,6 +832,8 @@ function handle(msg: ServerMsg): void {
       } else {
         goStep('mode');
       }
+      showScreen('home'); // 从对局/大厅页死会话回来时，真正离开旧页面
+      connBanner.classList.add('hidden');
       showHomeError(msg.reason);
       return;
     }

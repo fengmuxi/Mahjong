@@ -50,8 +50,14 @@ const DEAL_MS = Number(process.env.MAHJONG_DEAL_MS ?? 6500);
 const ROLL_MS = Number(process.env.MAHJONG_ROLL_MS ?? 2600);
 /** 随机风位入座；MAHJONG_FIXED_SEATS=1 时按空位顺序固定入座（本地手动验证用） */
 const RANDOM_SEATS = process.env.MAHJONG_FIXED_SEATS !== '1';
-/** 掉线后保留座位的宽限期（ms）：刷新页面 / 网络闪断不该把人踢出房间 */
-const RECON_MS = Number(process.env.MAHJONG_RECON_MS ?? 30000);
+/** 掉线后保留座位的宽限期已被「房间级保留」取代：座位与 token 一直保留到房间被定时回收，
+ *  凭 token 随时可 resume 续上（程序退出 / 网络闪断重进都不丢座位）。 */
+/** 房间定时回收：房间内没有任何人类连接持续这么久 → 自动关闭（token 一并作废）。
+ *  期间有人 resume / join 就继续存活 —— 退出程序再进来能凭房间码/token 续上，
+ *  长期没人回来的无效房间也不会永久占着房间码。 */
+const ROOM_TTL_MS = Number(process.env.MAHJONG_ROOM_TTL_MS ?? 30 * 60_000);
+/** 房间回收巡检间隔（ms） */
+const ROOM_SWEEP_MS = Number(process.env.MAHJONG_ROOM_SWEEP_MS ?? 60_000);
 /** 心跳间隔 / 存活判定（ms）。笔记本合盖、Wi-Fi 掉线这类「半开连接」不会触发 close，
  *  只能靠 ping/pong 主动探活：超过 PONG_TTL 没有回应就掐断，让人走「掉线托管 + 重连宽限」，
  *  而不是让全桌等一个其实已经不在的人。 */
@@ -96,6 +102,8 @@ interface Room {
   diceEndTimer: NodeJS.Timeout | null;
   /** 首局定庄：此定时器让最后一掷的骰子动画与金色点数亮满监听再进对局 */
   dealerStartTimer: NodeJS.Timeout | null;
+  /** 没有任何人类连接的起始时间（回收巡检用；有人连接即清空） */
+  noHumanSince: number | null;
 }
 
 const rooms = new Map<string, Room>();
@@ -171,9 +179,11 @@ function lobbyState(room: Room, you: number): ServerMsg {
     isBot: p.isBot,
     auto: p.isBot || p.auto || p.ws === null,
   }));
-  // 大厅横幅的语义是「可以开局了」：四人就绪 **且** 首局已定庄（机器人恒就绪）
+  // 大厅横幅的语义是「可以开局了」：四人就绪（离线座位按托管算）**且**首局已定庄（机器人恒就绪）
   const allReady =
-    players.length === MAX_SEATS && room.players.every((p) => p.ready || p.isBot) && room.firstDealerDecided;
+    players.length === MAX_SEATS &&
+    room.players.every((p) => p.ready || p.isBot || p.ws === null) &&
+    room.firstDealerDecided;
   const token = room.players.find((p) => p.seat === you)?.token ?? '';
   return {
     t: 'state',
@@ -548,19 +558,13 @@ function displaying(room: Room): boolean {
 }
 
 /**
- * 清退「本局结束后仍未重连」的人类座位（机器人不在此列，恒保留）；
- * 若房间里已没有人类（只剩机器人）→ 直接删房。返回 false 表示房间已删除。
+ * 【保留制】人类座位（含掉线）一律保留，掉线者凭 token 随时可 resume 续上；
+ * 只在「房间里一个人类都不剩」时收房（只剩机器人 = 没有可续的会话）。
+ * 逐个座位的老「未重连即离座」已废弃 —— 改由房间级 TTL 巡检统一回收。
  */
 function pruneGonePlayers(room: Room): boolean {
-  const gone = room.players.filter((p) => p.ws === null && !p.isBot);
-  if (gone.length > 0) {
-    for (const p of gone) tokens.delete(p.token);
-    room.players = room.players.filter((p) => p.ws !== null || p.isBot);
-    pruneDealerRolls(room);
-    for (const p of gone) broadcastEvent(room, `${windOf(room, p.seat)}·${p.name} 未重连，已离座`);
-  }
   if (!room.players.some((p) => !p.isBot)) {
-    // 只剩机器人：没人看了，收掉房间
+    // 只剩机器人：没有 token 可续，直接收房
     if (room.windowTimer) clearTimeout(room.windowTimer);
     if (room.autoTimer) clearTimeout(room.autoTimer);
     if (room.dealerStartTimer) clearTimeout(room.dealerStartTimer);
@@ -795,8 +799,12 @@ function startGame(room: Room): void {
   applyGameEvents(room, events);
 }
 
+/** 四人就绪：掉线（离线托管）座位不阻塞开局——他们由服务端代打、随时可 resume 续上 */
 function allReady(room: Room): boolean {
-  return room.players.length === MAX_SEATS && room.players.every((p) => p.ready || p.isBot);
+  return (
+    room.players.length === MAX_SEATS &&
+    room.players.every((p) => p.ready || p.isBot || p.ws === null)
+  );
 }
 
 /** 当前玩法是否需要首局掷骰定庄（南昌默认东起庄 → false；赣州四家比大小 → true） */
@@ -888,15 +896,16 @@ function pushDealerRoll(room: Room, seat: number, d1: number, d2: number): void 
 }
 
 /**
- * 机器人自动掷骰定庄：满 4 人且庄家未定时，未掷过的机器人依次补掷。
- * 不满 4 人时不掷（与人类口径一致：等满 4 人再定庄）。
+ * 满员且未定庄时，**机器人**与**掉线的人类**自动补掷定庄骰（与位置无关的托管语义：
+ * 掉线者不应让其余人卡在「等他掷骰」上）。在线人类不在此列 —— 骰子必须自己点。
  */
 function syncBotDealerRolls(room: Room): void {
   if (!needsDealerRoll(room)) return;
   if (room.phase !== 'lobby' || room.game || room.firstDealerDecided) return;
   if (room.players.length < MAX_SEATS) return;
   for (const p of room.players) {
-    if (!p.isBot || room.dealerRolls.some((r) => r.seat === p.seat)) continue;
+    if (room.dealerRolls.some((r) => r.seat === p.seat)) continue;
+    if (!p.isBot && p.ws !== null) continue; // 在线人类：等他自己掷
     pushDealerRoll(room, p.seat, 1 + Math.floor(Math.random() * 6), 1 + Math.floor(Math.random() * 6));
     if (room.firstDealerDecided || room.game) return;
   }
@@ -971,30 +980,29 @@ function leaveRoom(ws: WebSocket): void {
 }
 
 /**
- * 非对局进行中的掉线：**保留座位 + 令牌**，给一段宽限期等重连。
+ * 非对局进行中的掉线：**长期保留座位 + 令牌**（房间级保留制）。
  *
- * 背景：ws close 是「连接断开」而不是「用户想走」。刷新页面、切后台、网络闪断
- * 都会触发它，若在这里直接删令牌移出房间，token 重连就永远失效
- * （表现为「刷新一下就被踢出房间」）。对局进行中仍走原有托管逻辑（不阻塞牌局推进）。
+ * 背景：ws close 是「连接断开」而不是「用户想走」。刷新页面、切后台、网络闪断、
+ * 直接杀掉小程序再重开，都会触发它 —— 凭 token `resume` 随时回原座位续上；
+ * 房间里没有任何人类连接持续 ROOM_TTL_MS 后才由巡检自动关房（无效房间定时关闭）。
+ * 对局进行中仍走原有托管逻辑（不阻塞牌局推进）。
  */
 function beginReconnectGrace(room: Room, p: Player, ws: WebSocket): void {
   binding.delete(ws);
   p.ws = null;
-  p.ready = false; // 别让「掉线但仍就绪」把牌局开起来
-  if (p.reconTimer) clearTimeout(p.reconTimer);
-  p.reconTimer = setTimeout(() => {
+  p.ready = false; // 别让「掉线但仍就绪」把牌局开起来（离线座位按托管参与）
+  if (p.reconTimer) {
+    clearTimeout(p.reconTimer);
     p.reconTimer = null;
-    if (!rooms.has(room.code)) return;
-    if (p.ws !== null) return; // 期间已重连
-    // 牌局已在进行：该座位本就按「掉线托管」参与，不该在这里把牌局中止 ——
-    // 留到本局结束（`onGameOver` / `finalizeIfReady` 会清掉未重连的座位）。
-    if (room.game && room.game.phase === 'playing') return;
-    removePlayer(room, p.seat);
-  }, RECON_MS);
-  const secs = Math.round(RECON_MS / 1000);
-  broadcastEvent(room, `${playerName(room, p.seat)} 掉线，${secs} 秒内可重连`);
+  }
+  const mins = Math.max(1, Math.round(ROOM_TTL_MS / 60000));
+  broadcastEvent(room, `${playerName(room, p.seat)} 掉线，座位将保留 ${mins} 分钟，期间重进即可续局`);
   if (room.game) broadcastGame(room);
-  else broadcastLobby(room);
+  else {
+    // 掉线者错过定庄掷骰会卡死 others（要满 4 人全掷才定庄）→ 托管补掷
+    syncBotDealerRolls(room);
+    broadcastLobby(room);
+  }
 }
 
 /** 对局中掉线：保留座位进入托管（可 resume 重连） */
@@ -1013,7 +1021,7 @@ function handleDisconnect(ws: WebSocket): void {
     syncAuto(room);
     return;
   }
-  // 大厅 / 摊牌展示：不立刻移出，先等重连
+  // 大厅 / 摊牌展示：座位 + 令牌长期保留（可随时 resume 续上）
   beginReconnectGrace(room, p, ws);
 }
 
@@ -1056,6 +1064,7 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         autoTimer: null,
         diceEndTimer: null,
         dealerStartTimer: null,
+        noHumanSince: null,
       };
       rooms.set(code, room);
       binding.set(ws, { code, seat });
@@ -1082,7 +1091,8 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       const room = rec ? rooms.get(rec.code) : null;
       const player = room && rec ? room.players.find((p) => p.seat === rec.seat) : null;
       if (!room || !player || !rec) {
-        send(ws, { t: 'error', reason: '会话已失效，请重新加入房间' });
+        // 令牌不存在/座位不在：房间已被定时回收、解散，或服务端重启过（内存态丢失）
+        send(ws, { t: 'error', reason: '房间已失效，请重新创建或加入房间' });
         return;
       }
       const sameWs = player.ws === ws;
@@ -1687,6 +1697,41 @@ const heartbeat = setInterval(() => {
   }
 }, PING_MS);
 wss.on('close', () => clearInterval(heartbeat));
+
+/** 房间定时关闭：房间内没有任何人类连接持续 ROOM_TTL_MS → 自动关闭（全部 token 一并作废）。
+ *  每次巡检都按「是否还有人连着」实时刷新计数，有人 resume / 重连即清零 ——
+ *  正常退出程序再进来凭 token 续局；长期无人续上的房间给后来的加入者让出房间码。 */
+function closeRoom(room: Room): void {
+  if (room.windowTimer) clearTimeout(room.windowTimer);
+  if (room.autoTimer) clearTimeout(room.autoTimer);
+  if (room.dealerStartTimer) clearTimeout(room.dealerStartTimer);
+  room.dealerStartTimer = null;
+  clearDiceTimers(room);
+  for (const p of room.players) {
+    if (p.reconTimer) clearTimeout(p.reconTimer);
+    p.reconTimer = null;
+    tokens.delete(p.token);
+  }
+  rooms.delete(room.code);
+  console.log(
+    `[room] ${room.code} 已无人连接 ${Math.round(ROOM_TTL_MS / 1000)}s，自动关闭（token 已作废）`,
+  );
+}
+
+const roomSweeper = setInterval(() => {
+  const now = Date.now();
+  for (const room of [...rooms.values()]) {
+    if (room.players.some((p) => !p.isBot && p.ws !== null)) {
+      room.noHumanSince = null; // 还有人连着：清零计数
+      continue;
+    }
+    if (room.noHumanSince === null) {
+      room.noHumanSince = now; // 从现在起开始计「无人」时长
+      continue;
+    }
+    if (now - room.noHumanSince >= ROOM_TTL_MS) closeRoom(room);
+  }
+}, ROOM_SWEEP_MS);
 
 server.listen(PORT, () => {
   console.log(`麻将服务器已启动  http://localhost:${PORT}（玩法：${Object.keys(VARIANTS).join(' / ')}）`);

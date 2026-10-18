@@ -160,6 +160,11 @@ export class Game {
   chaozhuang = false;
   /** 报杠（§8.5）：牌面 → 展示者（该三张冻结：不可打、不进吃碰，可参与胡牌判定） */
   declaredKongs: Map<Tile, { seat: number }> = new Map();
+  /** 上宝倍数累计（确认口径 2026-10-18）：本局内打出的明面正精 / 明面副精张数；
+   *  倍数 = 1 + 正 + 副（1 = 无；明面正精/明面副精全场各只有 1 张，max = 3）。
+   *  铭牌展示 + 胡牌分结算（赢家收分 / 付分者出分都乘自己的倍数） */
+  baoZheng = [0, 0, 0, 0];
+  baoFu = [0, 0, 0, 0];
 
   private lastDrawn: Tile | null = null;
   private gangDrawJustNow = false;
@@ -291,6 +296,9 @@ export class Game {
   private applyGzFlip(r: { zheng: Tile[]; fu: Tile[]; slot: number }): void {
     this.gzJing = { zheng: r.zheng, fu: r.fu };
     this.jingPi = r.zheng[0] ?? null;
+    // jingFu 同步明面副精：viewFor 下发给客户端（手牌带 .fu 紫框、托管弃精评估、
+    // 画布精描边都读 view.jingFu；此前漏设 → 赣州副精边框/提示全程失效）
+    this.jingFu = r.fu[0] ?? null;
     this.jingSlot = r.slot >= 0 ? r.slot : null;
     // 海底（确认口径）：正精墩即牌墙尾预留区前缘——该墩及牌墙尾方向不再被摸走，
     // 摸到正精墩前缘仍无人胡牌即流局（“摸牌到翻的精的前一墩视为海底”）
@@ -533,10 +541,9 @@ export class Game {
         : [],
       skipRon: this.skipRon[seat],
       reveal:
-        this.phase === 'over' && this.winnerSeat !== null
-          ? this.hands.map((h) => sortTiles(h))
-          : null,
+        this.phase === 'over' ? this.hands.map((h) => sortTiles(h)) : null,
       gz: this.gzJingView(),
+      bao: this.gz ? this.baoMult() : [1, 1, 1, 1],
       winner: this.phase === 'over' ? this.winnerSeat : null,
       result: this.result,
       log: [...this.actionLog],
@@ -621,6 +628,11 @@ export class Game {
     if (idx < 0) throw new Error('手里没有这张牌');
     hand.splice(idx, 1);
     this.rivers[seat].push(tile);
+    // 上宝倍数（确认口径 2026-10-18）：打出明面正精 / 明面副精 → 本局倍数各 +1（胡牌分与铭牌用）
+    if (this.gz && this.gzJing) {
+      if (tile === this.gzJing.zheng[0]) this.baoZheng[seat]++;
+      else if (tile === this.gzJing.fu[0]) this.baoFu[seat]++;
+    }
     this.lastDiscard = { tile, from: seat };
     this.justDrew = false;
     this.gangDrawJustNow = false;
@@ -1201,7 +1213,7 @@ export class Game {
     const gankai = via === 'zimo' && this.gangDrawJustNow;
     // 胡的那张牌：自摸 = 刚摸那张（精吊判定「将牌 = {精, 胡牌张}」必需，见 gzwin.ts）
     const winTile = via === 'zimo' ? this.lastDrawn : tile;
-    const f = gzAnalyzeWin(concealed, this.melds[seat], jing, gankai, winTile);
+    const f = gzAnalyzeWin(concealed, this.melds[seat], jing, gankai, winTile, via);
     if (!f.valid) return null;
 
     // 天和（确认口径）：庄家起手 14 张即胡牌牌型；地和：庄家打出的第一张牌被闲家胡（仅此一种）
@@ -1218,7 +1230,7 @@ export class Game {
     }
 
     // 德中德（确认口径）：德国 + 任意胡牌牌型 + 其余三家一张精牌都没有（按物理持有：
-    // 手牌 + 副露 + 牌河；点炮张仍在打出者牌河里，算他有）；天地胡只叠精吊/德国，不叠德中德
+    // 手牌 + 副露 + 牌河；点炮张仍在打出者牌河里，算他有）；天地胡固定 40、不叠德中德
     const others = [0, 1, 2, 3]
       .filter((s) => s !== seat)
       .map((s) => [...this.hands[s], ...this.melds[s].flatMap((m) => m.tiles), ...this.rivers[s]]);
@@ -1451,15 +1463,22 @@ export class Game {
     return out;
   }
 
-  /** 胡牌分（§6.1/6.4/6.6）：底分 + 杠开8 + 精吊5 + 德国8（可同时成立：明面精与本张
-   *  同面成对时精吊德国都算，+13）；配将平胡（差将摸精硬凑将）两项都不加；德中德 ×4 */
+  /** 胡牌分（§6.1/6.4/6.6 + 2026-10-18 口径）：牌型基础分（小七13 / 大七27 / 十三烂13 /
+   *  七星32 / 平胡4）；有精吊 +5、德国 +8（可同时成立：明面精与本张同面成对时 +13）；
+   *  有精但既非精吊也非德国的**特殊牌型**在基础分上 −5（配将平胡维持平胡底分，不套此公式）；
+   *  杠开 +8 叠加、德中德 ×4。**天和 / 地和固定 40**，不参与精吊/德国/杠开/德中德演算 */
   private gzPatternScore(wi: WinInfo): number {
     const f = wi.gz;
     if (!f) return 0;
-    const base = wi.tiandi ? GZ_CONFIG.patternBase.tiandi : f.patternBase;
+    // 天和 / 地和：直接 40（2026-10-18 口径，原「40 + 精吊5 / 德国8」作废）
+    if (wi.tiandi) return GZ_CONFIG.patternBase.tiandi;
+    // 特殊牌型 = 非纯平胡（小七对 / 大七对 / 十三烂 / 七星十三烂 → 底分为 13/27/13/32）
+    const special = f.shapes.some((s) => s !== 'pinghu') || f.qixing;
+    const base = f.patternBase;
     let score = base + (wi.gankai ? GZ_CONFIG.gankaiBonus : 0);
     if (f.jingdiao) score += GZ_CONFIG.jingdiaoBonus;
     if (f.german) score += GZ_CONFIG.germanBonus;
+    else if (f.hasJing && !f.jingdiao && special) score -= GZ_CONFIG.jingdiaoBonus; // 有精未走精吊/德国 → 基础分 −5
     if (wi.dezhongde && !wi.tiandi) score *= GZ_CONFIG.dezhongdeMult;
     return score;
   }
@@ -1480,6 +1499,12 @@ export class Game {
       patternName: wi ? (this.labelOf(wi) ?? '平胡') : '流局',
       chaozhuang: this.chaozhuang,
       dealer: this.dealer,
+      baoMult: this.baoMult(),
     });
+  }
+
+  /** 各家上宝倍数 = 1 + 明面正精 + 明面副精（打出张数累计；非赣州恒 [1,1,1,1]） */
+  baoMult(): number[] {
+    return [0, 1, 2, 3].map((s) => 1 + this.baoZheng[s] + this.baoFu[s]);
   }
 }

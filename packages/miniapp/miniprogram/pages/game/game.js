@@ -163,9 +163,77 @@ Page({
     netText: '',
     toastShown: false,
     toastText: '',
+    // 刘海 / 挖孔屏安全区（px，横屏时在左或右侧边；无刘海设备为 0）。
+    // 写进根节点 CSS 变量 --safe-l/--safe-r，wxss 的 .game 横向 padding 用它让位。
+    safeL: 0,
+    safeR: 0,
   },
 
   // ---------- 生命周期 ----------
+
+  /**
+   * 刘海 / 挖孔屏安全区检测（2026-10-18，探测元素版）。
+   *
+   * 三个来源取大者：
+   *   ① **探测元素**（主来源，最可靠）：两个 0 高的隐藏节点宽度直接写成
+   *      `env(safe-area-inset-left/right)`，用 SelectorQuery 把宽度量回来 ——
+   *      这就是**当前运行时里 env() 真实解析出的值**，和 padding 用的是同一个求值，
+   *      模拟器 / 真机 / 新旧基础库都不会有「API 报告值与 CSS 实际值不一致」的缝隙；
+   *   ② `wx.getWindowInfo().safeArea`（部分安卓机型横屏只认这个）；
+   *      开发者工具的 getWindowInfo 可能不带 safeArea → 回退 getSystemInfoSync()。
+   * 横屏下刘海在左或右侧边（哪侧取决于旋转方向）；无刘海设备三个来源都是 0。
+   * 结果写进根节点 CSS 变量 --safe-l/--safe-r，wxss 的横向 padding 消费；变化时补 fitCanvas。
+   */
+  computeSafeInsets() {
+    let l = 0;
+    let r = 0;
+    let raw = null;
+    try {
+      let info = null;
+      try {
+        info = wx.getWindowInfo ? wx.getWindowInfo() : null;
+      } catch (e) {
+        info = null;
+      }
+      if (!info || !info.safeArea) {
+        // 开发者工具的 getWindowInfo 可能不带 safeArea → 回退旧接口
+        const legacy = wx.getSystemInfoSync ? wx.getSystemInfoSync() : null;
+        if (legacy && legacy.safeArea) info = legacy;
+      }
+      const sa = info && info.safeArea;
+      if (sa && info.windowWidth > 0) {
+        raw = sa;
+        l = Math.max(0, Math.round(sa.left));
+        r = Math.max(0, Math.round(info.windowWidth - sa.right));
+      }
+    } catch (e) {
+      /* 没有 safeArea：保持 0，由探测元素 / env() 兜底 */
+    }
+    const q = wx.createSelectorQuery();
+    q.select('#safe-probe-l').boundingClientRect();
+    q.select('#safe-probe-r').boundingClientRect();
+    q.exec((res) => {
+      // 探测元素宽度 = env() 在当前运行时的真实解析值（padding 里用的就是同一个 env()）
+      const pl = res && res[0] && res[0].width > 0 ? Math.round(res[0].width) : 0;
+      const pr = res && res[1] && res[1].width > 0 ? Math.round(res[1].width) : 0;
+      l = Math.max(l, pl);
+      r = Math.max(r, pr);
+      console.info(
+        '[mj] safeArea =',
+        raw ? JSON.stringify(raw) : 'null',
+        '→ env 探测 l/r =',
+        pl,
+        pr,
+        '→ 取大后 =',
+        l,
+        r,
+      );
+      if (l !== this.data.safeL || r !== this.data.safeR) {
+        this.setData({ safeL: l, safeR: r });
+        this.fitCanvas(); // 横向 padding 变了 → 画布可用宽变化，重量一次
+      }
+    });
+  },
 
   onLoad() {
     this.view = null;
@@ -184,7 +252,10 @@ Page({
     // 窗口尺寸变化（真机旋转 / 模拟器改窗口）：Page.onResize 在部分环境不触发，
     // 再挂一个应用级监听兜底 —— 画布不重量就会出现留白或点牌错位。
     if (wx.onWindowResize) {
-      this.windowResizeHandler = () => this.fitCanvas();
+      this.windowResizeHandler = () => {
+        this.computeSafeInsets(); // 旋转后刘海可能换边
+        this.fitCanvas();
+      };
       wx.onWindowResize(this.windowResizeHandler);
     }
     const g = getApp().globalData;
@@ -204,6 +275,7 @@ Page({
   onShow() {
     room.attach('game', this);
     this.syncNet();
+    this.computeSafeInsets(); // 刘海 / 挖孔屏：每次显示重测（旋转方向变了内缩侧会互换）
     this.initCanvas();
     this.startCountdown();
     const g = getApp().globalData;
@@ -228,7 +300,8 @@ Page({
   },
 
   onResize() {
-    // 横竖屏切换 / 分屏：重算画布盒尺寸并重新量一次 rect
+    // 横竖屏切换 / 分屏：重算安全区（刘海换边）与画布盒尺寸并重新量一次 rect
+    this.computeSafeInsets();
     this.fitCanvas();
   },
 

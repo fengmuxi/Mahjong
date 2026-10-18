@@ -1,7 +1,12 @@
 <!-- 掷骰覆盖层是两页共用的模板（样式在 app.wxss），import 必须在文件顶层 -->
 <import src="/templates/dice.wxml" />
 
-<view class="{{pageLeaving ? 'page-leaving' : ''}} page game bg-cloud">
+<view class="{{pageLeaving ? 'page-leaving' : ''}} page game bg-cloud" style="--safe-l:{{safeL}}px; --safe-r:{{safeR}}px">
+  <!-- 刘海/挖孔探测元素：宽度直接写成 env(safe-area-inset-left/right)，
+       computeSafeInsets 用 SelectorQuery 把它量回来 —— 量到的就是当前运行时里
+       env() 的真实解析值（0 高、不可见，不影响布局与点击） -->
+  <view id="safe-probe-l" class="safe-probe"></view>
+  <view id="safe-probe-r" class="safe-probe"></view>
   <view class="banner" wx:if="{{netShown}}">{{netText}}</view>
 
   <!-- HUD -->

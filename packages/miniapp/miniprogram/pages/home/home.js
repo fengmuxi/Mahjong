@@ -73,7 +73,8 @@ Page({
       this.goStep('form');
     } else {
       this.goStep('mode');
-      this.setData({ focusName: true });
+      // 昵称为空才自动聚焦（本地记忆里已有昵称时不再弹键盘）
+      if (!this.data.name) this.setData({ focusName: true });
     }
   },
 
@@ -158,7 +159,10 @@ Page({
     if (id === 'form') {
       this.renderWizardForm();
       const focusCode = this.data.wizardMode === 'join' && !this.data.code;
-      this.setData({ focusName: !focusCode, focusCode });
+      // 昵称已填（本地记忆回填 / 上一步带过来）就不要再抢焦点弹键盘——
+      // 自动聚焦只在昵称为空时发生（2026-10-18）
+      const focusName = !this.data.name && !focusCode;
+      this.setData({ focusName, focusCode });
     }
   },
 

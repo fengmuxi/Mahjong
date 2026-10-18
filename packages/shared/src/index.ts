@@ -215,6 +215,9 @@ export interface GameView {
   reveal: Tile[][] | null;
   /** 赣州冲关：精牌视图（未揭晓仅含翻出的正精）；其他玩法为 null */
   gz: GzJingView | null;
+  /** 赣州冲关：各家上宝倍数（本局内打出明面正精 / 明面副精各 +1：1 = 无，2 = 单，3 = 一正一副）；
+   *  铭牌徽标与胡牌分结算用；其他玩法恒为 [1,1,1,1] */
+  bao: number[];
   /** 胡牌者座位（phase=over 且有赢家时；流局为 null）——供牌桌显著标识赢家 */
   winner: number | null;
   /** phase=over 时的结果文案 */

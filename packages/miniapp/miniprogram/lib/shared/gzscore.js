@@ -47,7 +47,8 @@ function gzSettle(input) {
     const rows = [0, 1, 2, 3].map((seat) => {
         const ss = jingScores[seat];
         const chongguan = ss.combos.reduce((m, c) => Math.max(m, c.chongguan), 1);
-        const pattern = input.winner === seat ? input.pattern : 0;
+        // 胡牌分：赢家自己有上宝倍数时，其胡牌分（展示与账面口径）按倍数上抬
+        const pattern = input.winner === seat ? input.pattern * input.baoMult[seat] : 0;
         return {
             seat,
             pi: holdings[seat].pi,
@@ -88,29 +89,30 @@ function gzSettle(input) {
             direct.push({ from: p.discarder, to: p.claimer, amount, kind: p.kind === 'gang' ? 'pack-gang' : 'pack-meld' });
         }
     }
-    // 胡牌分直付（与交叉分开）
+    // 胡牌分直付（与交叉分开）；上宝倍数：每笔胡牌分 = 分数 × 收方倍数 × 付方倍数（确认口径 2026-10-18）
     if (w !== null && input.pattern > 0) {
+        const mw = input.baoMult[w];
         if (dsc === null) {
-            // 自摸：其余三家各付全分
+            // 自摸：其余三家各付全分 × 各自倍数
             for (let s = 0; s < 4; s++) {
                 if (s !== w)
-                    direct.push({ from: s, to: w, amount: input.pattern, kind: 'zimo' });
+                    direct.push({ from: s, to: w, amount: input.pattern * mw * input.baoMult[s], kind: 'zimo' });
             }
         }
         else if (dsc !== w) {
-            // 点炮 / 抢杠：点炮者付全分，其余两家各付 4（§6.3）
-            direct.push({ from: dsc, to: w, amount: input.pattern, kind: 'ron' });
+            // 点炮 / 抢杠：点炮者付全分 × 双方倍数，其余两家各付 4 × 各自倍数（§6.3 + 上宝口径）
+            direct.push({ from: dsc, to: w, amount: input.pattern * mw * input.baoMult[dsc], kind: 'ron' });
             for (let s = 0; s < 4; s++) {
                 if (s !== w && s !== dsc)
-                    direct.push({ from: s, to: w, amount: gzconfig_1.GZ_CONFIG.ronOthersPay, kind: 'ron-other' });
+                    direct.push({ from: s, to: w, amount: gzconfig_1.GZ_CONFIG.ronOthersPay * mw * input.baoMult[s], kind: 'ron-other' });
             }
         }
-        // 被吃 / 碰后该家胡牌：打出者再承担其胡牌分（§5.6，建议全包）
+        // 被吃 / 碰后该家胡牌：打出者再承担其胡牌分（§5.6，建议全包）——同样乘上宝倍数
         if (gzconfig_1.GZ_CONFIG.packHuShare > 0) {
             for (const p of input.packs) {
                 if (p.kind === 'gang' || p.claimer !== w || p.discarder === w)
                     continue;
-                const amount = Math.round(input.pattern * gzconfig_1.GZ_CONFIG.packHuShare);
+                const amount = Math.round(input.pattern * mw * input.baoMult[p.discarder] * gzconfig_1.GZ_CONFIG.packHuShare);
                 if (amount > 0)
                     direct.push({ from: p.discarder, to: w, amount, kind: 'pack-hu' });
             }

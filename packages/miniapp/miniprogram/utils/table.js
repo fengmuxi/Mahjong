@@ -187,9 +187,12 @@ class Table {
     const over = view.phase === 'over';
     this.drawTable();
     this.drawWall(view, deal);
-    // 对局中四条边是牌河；摊牌/流局时同一个位置改画各家明牌（否则两者会叠在一起）。
+    // 对局中四条边是牌河；结算/摊牌时「手牌 + 牌河 + 副露」同屏：
+    //   顶/底边 —— 手牌一排（40×50）在上、牌河缩两排（22×28）在下，同一条边分段共存；
+    //   左/右边 —— 手牌仍走外侧两列（46×58），牌河让到内侧三列（x116 / x1022 起整排）。
     // 对局中**不画任何手牌**（含对手）—— 手牌张数在铭牌上，牌面信息全部让给牌河。
     if (!over) this.drawRivers(view);
+    else this.drawRiversOver(view);
     this.drawCenter(view, deal);
     for (let s = 0; s < 4; s++) {
       const slot = this.disp(view, s);
@@ -482,7 +485,9 @@ class Table {
     const river = view.rivers[last.from] || [];
     const i = river.length - 1;
     if (i < 0 || river[i] !== last.tile) return;
-    const p = this.riverPos(this.disp(view, last.from), i);
+    const slot = this.disp(view, last.from);
+    // 结算态牌河是缩排（riverOverOrigin），金框要跟上；对局中走原 riverPos
+    const p = view.phase === 'over' ? this.riverOverPos(slot, i) : this.riverPos(slot, i);
     const ctx = this.ctx;
     ctx.strokeStyle = '#e6c14b';
     ctx.lineWidth = 2;
@@ -710,14 +715,16 @@ class Table {
   }
 
   /**
-   * 摊牌时各家明牌的落位（与 riverOrigin 同一套四边；摊牌时牌河不画，整条边都空着）。
-   *   自己/对家：顶/底边各 13 列 × 2 行（14 张刚好两行）
-   *   上家/下家：左右边各 2 列 × 7 行（13~14 张）
-   * 牌张尺寸与牌河一致（RIVER_W/H），摊牌时看得最清楚。
+   * 摊牌各家明牌落位（结算态，2026-10-18 重排：手牌与牌河同边共存）：
+   *   自己/对家：顶/底边**一排**40×50（14 张 = 14×44−4 = 612 ≤ 622 可用宽度），
+   *     剩下的下半段让给缩小的牌河（riverOverOrigin）；
+   *   上家/下家：左右边仍用**外侧两列**46×58×7 行（13~14 张，同旧摊牌位），
+   *     环内侧三列整排让给牌河。
+   * 牌张尺寸：横边 40×50 / 竖边 46×58，摊牌时看得清楚。
    */
   revealOrigin(slot) {
-    if (slot === 2) return { x: 328, y: 0, cols: 13, rows: 2, vertical: false };
-    if (slot === 0) return { x: 328, y: 506, cols: 13, rows: 2, vertical: false };
+    if (slot === 2) return { x: 328, y: 0, cols: 14, rows: 1, vertical: false, t: 'over' };
+    if (slot === 0) return { x: 328, y: 506, cols: 14, rows: 1, vertical: false, t: 'over' };
     if (slot === 3) return { x: 20, y: 70, cols: 2, rows: 7, vertical: true };
     return { x: 1166, y: 70, cols: 2, rows: 7, vertical: true };
   }
@@ -727,6 +734,23 @@ class Table {
     // 流局（phase=over 但 reveal=null）时自己那手牌仍要从 myTiles 画出来
     const tiles = (view.reveal && view.reveal[seat]) || (slot === 0 ? view.myTiles || [] : []);
     if (tiles.length === 0) return;
+    if (slot === 0 || slot === 2) {
+      // 横边：单排 40×50，行距 44
+      const HB_W = 40;
+      const HB_H = 50;
+      const HB_DX = 44;
+      const y = slot === 0 ? 506 : 0;
+      tiles.forEach((t, i) => {
+        this.drawTile(t, 328 + i * HB_DX, y, HB_W, HB_H, view);
+      });
+      this.revealRects[slot] = {
+        x: Math.max(0, 328 - 5),
+        y: Math.max(0, y - 5),
+        w: Math.min(tiles.length, 14) * HB_DX - (HB_DX - HB_W) + 10,
+        h: HB_H + 10,
+      };
+      return;
+    }
     const z = this.revealOrigin(slot);
     const per = z.vertical ? z.rows : z.cols;
     tiles.forEach((t, i) => {
@@ -743,6 +767,47 @@ class Table {
       w: cols * RIVER_DX - (RIVER_DX - RIVER_W) + 10,
       h: rows * RIVER_DY - (RIVER_DY - RIVER_H) + 10,
     };
+  }
+
+  /**
+   * 结算态牌河落位（与摊牌手牌同边共存）：
+   *   自己/对家：横边下半段，缩牌 22×28、列距 24 / 行距 32，两排最多 2×26=52 张；
+   *     顶边 y56..116（牌墙 122 之前）、底边 y560..620（铭牌 572 只占 x≤234）。
+   *   上家/下家：让到**环内侧三列**——
+   *     左：摊牌手牌占外侧两列 x20..114，牌河用 x116..258（牌墙 284 之前）；
+   *     右：摊牌手牌占外缘两列 x1166..1260，牌河用 x1022..1168（右墙 1003 之后）；
+   *     竖排 46×58 × 8 行 = 24 张；超过 24 张切缩排（30×38、行距 44，最多 11 行=33 张）。
+   */
+  riverOverOrigin(slot) {
+    if (slot === 2) return { x: 328, y: 56, w: 22, h: 28, dx: 24, dy: 32, per: 26, vertical: false };
+    if (slot === 0) return { x: 328, y: 560, w: 22, h: 28, dx: 24, dy: 32, per: 26, vertical: false };
+    if (slot === 3) return { x: 116, y: 70, w: 46, h: 58, dx: 48, dy: 60, per: 8, vertical: true, cap: 24 };
+    return { x: 1022, y: 70, w: 46, h: 58, dx: 48, dy: 60, per: 8, vertical: true, cap: 24 };
+  }
+
+  riverOverPos(slot, i) {
+    const o = this.riverOverOrigin(slot);
+    if (o.cap && i >= o.cap) {
+      // 超排：切 30×38 缩排，行距 44（y70 起 11 行）
+      const k = i - o.cap;
+      const col = Math.floor(k / 11);
+      const row = k % 11;
+      return { x: o.x + col * 32, y: o.y + row * 44, w: 30, h: 38 };
+    }
+    const col = o.vertical ? Math.floor(i / o.per) : i % o.per;
+    const row = o.vertical ? i % o.per : Math.floor(i / o.per);
+    return { x: o.x + col * o.dx, y: o.y + row * o.dy, w: o.w, h: o.h };
+  }
+
+  drawRiversOver(view) {
+    for (let s = 0; s < 4; s++) {
+      const slot = this.disp(view, s);
+      const river = view.rivers[s] || [];
+      river.forEach((tile, i) => {
+        const p = this.riverOverPos(slot, i);
+        this.drawTile(tile, p.x, p.y, p.w, p.h, view);
+      });
+    }
   }
 
   meldWidth(m) {
@@ -880,7 +945,7 @@ class Table {
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
 
-    // ---- 第一行：庄标 + 风位·昵称（左）/ 总分（右）----
+    // ---- 第一行：庄标 + 上宝徽标 + 风位·昵称（左）/ 总分（右）----
     let tx = x + 12;
     if (dealer) {
       roundRect(ctx, x + 10, y + 8, 24, 20, 5);
@@ -892,6 +957,20 @@ class Table {
       ctx.fillText('庄', x + 22, y + 18);
       ctx.textAlign = 'left';
       tx = x + 40;
+    }
+    // 上宝倍数徽标（庄家标之后）：打出明面正精/副精累计，胡牌分按它翻倍
+    const bao = (view && view.bao && view.bao[seat]) || 1;
+    if (bao > 1) {
+      roundRect(ctx, tx, y + 8, 42, 20, 5);
+      ctx.fillStyle = '#c3603d';
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = font(12, true);
+      ctx.textAlign = 'center';
+      ctx.fillText(`宝×${bao}`, tx + 21, y + 18);
+      ctx.textAlign = 'left';
+      ctx.font = font(13);
+      tx += 46;
     }
 
     const tv = (view.totals && view.totals[seat]) || 0;

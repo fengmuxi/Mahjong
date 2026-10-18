@@ -55,8 +55,9 @@ exports.ganzhouRules = {
         analyze: (i) => {
             var _a, _b, _c;
             const jing = (_b = (_a = i.gzJing) !== null && _a !== void 0 ? _a : i.wild.gz) !== null && _b !== void 0 ? _b : { zheng: [], fu: [] };
-            // 胡牌张：点炮 = literalExtra；自摸路径走引擎直连（gzBuildWin）不经这里
-            const f = (0, gzwin_1.gzAnalyzeWin)(i.concealed, i.melds, jing, (_c = i.gzGankai) !== null && _c !== void 0 ? _c : false, i.literalExtra);
+            // 胡牌张：点炮 = literalExtra；自摸路径走引擎直连（gzBuildWin）不经这里。
+            // via：点炮不允许配将平胡（gzwin §6.5 口径）
+            const f = (0, gzwin_1.gzAnalyzeWin)(i.concealed, i.melds, jing, (_c = i.gzGankai) !== null && _c !== void 0 ? _c : false, i.literalExtra, i.ctx.via);
             // 适配 WinAnalysis 形状（german 语义 = 无精德国；额外事实挂在 gz 字段）
             return { valid: f.valid, shapes: f.shapes, german: f.german, gz: f };
         },

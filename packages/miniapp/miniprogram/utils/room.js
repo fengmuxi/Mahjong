@@ -44,6 +44,14 @@ function destName() {
   return current ? current.name : null;
 }
 
+/**
+ * 房间已失效类错误（resume 的座位/房间已被服务端定时回收、解散，或服务端重启过）：
+ * 无论当前停在哪一页，都应清掉本地会话并回首页提示 —— 房间没了，重连注定徒劳。
+ */
+function isFatalRoomError(reason) {
+  return /已失效/.test(String(reason || ''));
+}
+
 function navigate(name, url) {
   if (navInFlight === name) return;
   navTarget = { name, url };
@@ -142,11 +150,14 @@ function handle(msg) {
         net.disablePing();
         return;
       }
-      if (autoResume) {
+      if (autoResume || isFatalRoomError(msg.reason)) {
         autoResume = false;
         const savedRoom = store.get(store.KEYS.room, '');
         store.clearRoom();
         g.resumeFail = { reason: msg.reason, room: savedRoom };
+        // 房间没救了：别再留着会话触发下一轮自动重连
+        net.setInRoom(false);
+        net.closeSocket();
         if (!current || current.name !== 'home') {
           wx.reLaunch({ url: '/pages/home/home' });
         } else {

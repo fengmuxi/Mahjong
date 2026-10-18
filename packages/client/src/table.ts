@@ -200,6 +200,8 @@ export class Table {
 
     this.drawTable();
     this.drawWall(view, deal);
+    // 结算（over）时牌河照画：本端牌河在环内（y156/y398 带），与边上的摊牌手牌
+    // （y54 / x160 / x1092）不在同一网格，无需让位
     this.drawRivers(view);
     this.drawCenter(view, deal);
     for (let s = 0; s < 4; s++) {
@@ -951,6 +953,20 @@ export class Table {
       ctx.fillText('庄', x + 18, y + 14);
       ctx.textAlign = 'left';
       tx = x + 33;
+    }
+    // 上宝倍数徽标（庄家徽标之后）：打出明面正精/副精累计，胡牌分按它翻倍
+    const bao = (view as { bao?: number[] }).bao?.[seat] ?? 1;
+    if (bao > 1) {
+      roundRect(ctx, tx, y + 5, 36, 17, 4);
+      ctx.fillStyle = '#c3603d';
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 10px "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`宝×${bao}`, tx + 18, y + 14);
+      ctx.textAlign = 'left';
+      ctx.font = '11px "Microsoft YaHei", sans-serif';
+      tx += 40;
     }
 
     // 第一行：风位 · 昵称

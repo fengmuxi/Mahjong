@@ -24,7 +24,7 @@ export const GZ_PATTERN_BASE = {
   big7: 27,
   shisanlan: 13,
   qixing: 32,
-  /** 天和 / 地和（可再叠加精吊 +5 或德国 +8，§6.6） */
+  /** 天和 / 地和：固定 40 分，不参与精吊/德国/德中德演算（【修订·2026-10-18】） */
   tiandi: 40,
 } as const;
 

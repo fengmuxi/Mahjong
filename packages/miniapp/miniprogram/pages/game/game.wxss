@@ -1,5 +1,11 @@
 .game {
-  padding: 8rpx 16rpx 12rpx;
+  /* 横向 padding 吃进刘海 / 挖孔内缩。两个来源取大者（max）：
+     ① var(--safe-l/r)：computeSafeInsets 用「探测元素」量出的 env() 真实值 +
+        wx.getWindowInfo().safeArea（部分安卓机型横屏只认这个）；
+     ② env(safe-area-inset-left/right)：iOS 横屏的可靠来源。
+     无刘海 / 挖孔设备两者都是 0px，布局与原样一致。底部安全区仍走 env()（Home 指示条）。 */
+  padding: 8rpx calc(16rpx + max(var(--safe-r, 0px), env(safe-area-inset-right, 0px))) 12rpx
+    calc(16rpx + max(var(--safe-l, 0px), env(safe-area-inset-left, 0px)));
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -189,6 +195,40 @@
   flex-direction: column;
   align-items: center;
   flex-shrink: 0;
+}
+
+/*
+ * 刘海/挖孔探测元素（computeSafeInsets 用）：宽度直接写成 env(safe-area-inset-left/right)，
+ * SelectorQuery 量它的宽 = 当前运行时里 env() 的真实解析值。0 高 + absolute + 不可见，
+ * 不占布局、不挡点击。
+ */
+.safe-probe {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+#safe-probe-l {
+  width: env(safe-area-inset-left, 0px);
+}
+
+#safe-probe-r {
+  width: env(safe-area-inset-right, 0px);
+}
+
+/*
+ * 提示浮层（事件/错误 toast）在局内改到手牌条（出牌器）**上方**——
+ * app.wxss 的 `.toast` 是 fixed bottom:40rpx，正好压在手牌条上（用户截图红框）。
+ * fixed 相对视口定位，bottom 要跨过整个操作区：状态行 32rpx + 间距 4rpx
+ * + 手牌条 96rpx + 页脚 padding 12rpx + 间隙 12rpx ≈ 156rpx。
+ * 浮层盖住的是牌桌下沿的牌河（提示 3s 自动消失，不常驻）。
+ * 手机横屏紧凑档的 px 精确定位在下方 media 块里。
+ */
+.toast {
+  bottom: 156rpx;
 }
 
 /* ---------- 局内聊天（流内右列；窄屏展开 / 宽屏常驻） ---------- */
@@ -717,7 +757,9 @@
  */
 @media (max-height: 680px) {
   .game {
-    padding: 4px 8px calc(4px + env(safe-area-inset-bottom, 0px));
+    padding: 4px calc(8px + max(var(--safe-r, 0px), env(safe-area-inset-right, 0px)))
+      calc(4px + env(safe-area-inset-bottom, 0px))
+      calc(8px + max(var(--safe-l, 0px), env(safe-area-inset-left, 0px)));
   }
 
   .banner {
@@ -1062,7 +1104,10 @@
   .toast {
     font-size: 12px;
     padding: 6px 12px;
-    bottom: 20px;
+    /* 提示浮层改到手牌条（出牌器）**上方**：fixed 的 bottom 要跨过整个操作区
+       （状态行 15px + 间距 2px + 手牌条 68px + 页脚 padding 4px + 6px 间隙），
+       并叠上 iPhone 底部安全区。盖住的是牌桌下沿的牌河（提示 3s 自动消失）。 */
+    bottom: calc(95px + env(safe-area-inset-bottom, 0px));
   }
 }
 
