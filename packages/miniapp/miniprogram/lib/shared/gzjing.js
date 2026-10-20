@@ -182,51 +182,27 @@ function gzJingCombos(j) {
     }
     return out;
 }
-/** 每张牌面在 6 组中的精位次数（正精位 / 副精位） */
-function gzJingSlotCounts(j) {
-    const zheng = new Array(34).fill(0);
-    const fu = new Array(34).fill(0);
-    for (const t of j.zheng)
-        if (t !== undefined)
-            zheng[t]++;
-    for (const t of j.fu)
-        if (t !== undefined)
-            fu[t]++;
-    return { zheng, fu };
-}
 /**
- * 某家在各牌面**计入精分**的正 / 副精张数：**每张物理牌只计一次**，且优先顶正精位。
- * 例：手上 2 张 1 万 —— 1 张顶「1万+2万」组的正精，另 1 张顶「9万+1万」组的副精。
- */
-function gzJingUsed(counts, slots) {
-    const zheng = new Array(34).fill(0);
-    const fu = new Array(34).fill(0);
-    for (let k = 0; k < 34; k++) {
-        zheng[k] = Math.min(counts[k], slots.zheng[k]);
-        fu[k] = Math.min(counts[k] - zheng[k], slots.fu[k]);
-    }
-    return { zheng, fu };
-}
-/**
- * 精分（§5.2 新口径）：12 张精两两配对为 6 组（正精 + 副精），**每组按冲关规则独立计算**，
+ * 某家精分（§5.2 新口径）：12 张精两两配对为 6 组（正精 + 副精），**每组按冲关规则独立计算**，
  * 相同组合的多组**分数重复累加**；某组正副精仅一家持有时该组得分 ×2（精霸，§5.4）。
  *
- * 组合累计精分 = 正精计入张数 × 2 + 副精计入张数 × 1，每张物理牌只计一次、优先顶正精位。
+ * **按牌面计（2026-10-18 确认，不设精位上限）**：该家持有（手 + 副露 + 牌河）里每一张
+ * 精面牌都计分——正精面每张 2 分、副精面每张 1 分（同面多张照算）；一张牌面同属正副精面
+ * 时按两面叠加（= 3 分/张）。
  *
  * @param scoreHoldings 交叉账用持有（全包牌已剔除）
  * @param physHoldings  物理持有（精霸判定用，含全包牌与牌河）
  */
 function gzJingSeatScores(scoreHoldings, physHoldings, j) {
-    const slots = gzJingSlotCounts(j);
     const combos = gzJingCombos(j);
     const physCounts = physHoldings.map((h) => (0, tiles_1.tileCounts)(h));
     return scoreHoldings.map((tiles, seat) => {
-        const used = gzJingUsed((0, tiles_1.tileCounts)(tiles), slots);
+        const counts = (0, tiles_1.tileCounts)(tiles);
         const out = [];
         let raw = 0;
         let final = 0;
         for (const c of combos) {
-            const accum = gzconfig_1.GZ_CONFIG.zhengPoints * used.zheng[c.zheng] + gzconfig_1.GZ_CONFIG.fuPoints * used.fu[c.fu];
+            const accum = gzconfig_1.GZ_CONFIG.zhengPoints * counts[c.zheng] + gzconfig_1.GZ_CONFIG.fuPoints * counts[c.fu];
             const chongguan = gzChongguanMult(accum);
             // 精霸（§5.4 按组）：该组正副精仅此一家持有，且这家两张都有
             let owners = 0;
