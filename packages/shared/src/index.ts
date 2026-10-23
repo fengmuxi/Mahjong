@@ -389,6 +389,8 @@ export type ServerMsg =
   | {
       t: 'settle';
       title: string;
+      /** 本局赢家座位（null = 流局 / 无人胡牌）；客户端据此显示结算面板顶部的结果图标（win/lost/draw） */
+      winner?: number | null;
       rows: {
         seat: number;
         name: string;

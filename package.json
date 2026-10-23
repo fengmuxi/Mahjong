@@ -10,7 +10,9 @@
     "start": "tsx packages/server/src/index.ts",
     "typecheck": "tsc --noEmit",
     "build:mp": "node scripts/mp_build_shared.mjs",
-    "build:cdn-tiles": "node scripts/gen_cdn_tiles.mjs"
+    "build:cdn-tiles": "node scripts/gen_cdn_tiles.mjs",
+    "gen:ui-cdn": "node scripts/gen_ui_cdn.mjs",
+    "gen:face-atlas": "node scripts/gen_face_atlas.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",

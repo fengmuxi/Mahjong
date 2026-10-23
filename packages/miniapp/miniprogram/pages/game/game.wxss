@@ -3,9 +3,13 @@
      ① var(--safe-l/r)：computeSafeInsets 用「探测元素」量出的 env() 真实值 +
         wx.getWindowInfo().safeArea（部分安卓机型横屏只认这个）；
      ② env(safe-area-inset-left/right)：iOS 横屏的可靠来源。
-     无刘海 / 挖孔设备两者都是 0px，布局与原样一致。底部安全区仍走 env()（Home 指示条）。 */
-  padding: 8rpx calc(16rpx + max(var(--safe-r, 0px), env(safe-area-inset-right, 0px))) 12rpx
-    calc(16rpx + max(var(--safe-l, 0px), env(safe-area-inset-left, 0px)));
+     无刘海 / 挖孔设备两者都是 0px，布局与原样一致。
+     **顶部同理**（--safe-t）：navigationStyle=custom 后页面铺满全屏，自绘顶栏
+     必须自己避开系统状态栏（安卓横屏 ~24px，iOS 横屏 0）。底部安全区仍走 env()。 */
+  padding-top: calc(4px + max(var(--safe-t, 0px), env(safe-area-inset-top, 0px)));
+  padding-right: calc(16rpx + max(var(--safe-r, 0px), env(safe-area-inset-right, 0px)));
+  padding-bottom: calc(12rpx + env(safe-area-inset-bottom, 0px));
+  padding-left: calc(16rpx + max(var(--safe-l, 0px), env(safe-area-inset-left, 0px)));
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -26,150 +30,300 @@
   position: absolute;
 }
 
-/* ---------- HUD ---------- */
-.game-hud {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12rpx;
-  margin-bottom: 6rpx;
+/* ---------- 整屏桌面（2026-10-22） ---------- */
+/*
+ * 用户参考图（源项目 liumengniu/majiang 的对局画面）里，绿绒龙纹桌是**铺满整屏**的，
+ * 手牌直接坐在桌上；而本页原来的桌面是 canvas 里的一张贴图 —— 画布 2:1 又被行高
+ * 卡成手机横屏宽度的 ~65%，左右两条深色空白里飘着按钮轨，观感像「一张牌桌摆在黑屋子里」。
+ *
+ * 现在：这一层 DOM 铺整页（`<image mode="scaleToFill">`），canvas 里画同一张图的同一块
+ * （table.js 的 drawTable 按 `frame` 矩形铺），两层映射完全一致 → 画布矩形内由 canvas 画、
+ * 矩形外由 DOM 画，接缝不可见。**两边都必须是「非等比整铺」**：
+ * 换成 cover/等比会裁边，2:1 的图铺 2.16:1 的横屏会把上下木框各裁掉一截，只剩左右两条竖框。
+ * canvas 那边同样按整铺算，不要改成 cover。
+ *
+ * 为什么不能干脆把 canvas 拉满整屏：<canvas type="2d"> 是原生组件，会压住其矩形内的
+ * 所有 DOM（手牌条、按钮轨都会看不见点不着），所以 canvas 只能占中间那块，
+ * 桌面靠「DOM 铺外圈 + canvas 铺内圈」拼出来。
+ */
+.felt {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 0;
+  pointer-events: none;
+  /* 兜底色 = 桌面贴图绒布的平均色（采样 table.webp：#116347~#186f4f 之间）——
+     图片还在路上时铺的就是它，不会先闪一块黑。 */
+  background-color: #14614a;
+  /* <image mode="scaleToFill"> 铺满（非等比拉伸，与 canvas 侧 drawImage 的整铺映射一致） */
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
-.hud-group {
+/* UI 整通道拿不到（清单空 / 请求失败）：退成矢量桌的外层藏青，见 game.js 的 loadUiArt */
+.felt.na {
+  background-color: #0d1626;
+}
+
+/* 桌面之上的所有内容都要显式抬一层，否则会被 .felt 盖住（同为普通 DOM，按 z-index 排） */
+.g-top,
+.banner,
+.game-main,
+.board-overlay {
+  position: relative;
+  z-index: 1;
+}
+
+/* ---------- 自绘顶栏（navigationStyle=custom） ---------- */
+/*
+ * 2026-10-21 布局重排（用户报「牌面区域小、功能都挤在顶部」）。
+ * 改前：原生导航栏（44px）+ HUD 一行（玩法/房间/牌墙/精 + 4 枚功能钮）≈ 74px 高度，
+ * 牌桌一寸都沾不到。改后：合成一行 28px 的极简信息条，功能钮全部迁到左右侧边轨
+ * （.rail），牌桌高度净赚 ~44px、宽度净赚两条侧栏（PC 宽窗约 400px）。
+ * 高度与 game.js 的 TOPBAR_H 必须一致（estimateWrap 的兜底估算要用）。
+ */
+.g-top {
   display: flex;
   align-items: center;
   gap: 10rpx;
-  flex-wrap: wrap;
+  height: 28px;
+  margin-bottom: 2px;
+  flex-shrink: 0;
   min-width: 0;
 }
 
-/* 右侧按钮组不参与压缩：按钮已是内容宽，再压只会让文字折行 */
-.game-hud .hud-group:last-child {
+.g-top-back {
+  width: 26px;
+  height: 26px;
+  line-height: 24px;
+  text-align: center;
+  font-size: 18px;
+  color: #f6e3a1;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8rpx;
+  background: rgba(16, 26, 21, 0.7);
   flex-shrink: 0;
 }
 
-.hud-label {
-  font-size: 20rpx;
-  color: #9db5a8;
+.g-top-info {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
-.hud-sep {
-  color: rgba(255, 255, 255, 0.15);
-  font-size: 20rpx;
+/* 右侧避让系统胶囊（⋯ ○）：CAPSULE_W 与 game.js 常量一致 */
+.g-top-cap {
+  width: 118px;
+  flex-shrink: 0;
 }
 
-.hud-item {
-  font-size: 22rpx;
+.g-top-item {
+  font-size: 11px;
   color: #b9cfc2;
-  /* jingText 很长（赣州：\"正精 北 · 副精 东（其余 10 张结算揭晓）\"）：
-     不截断会在窄宽横屏把 HUD 撑成两行、挤掉牌桌高度 —— 单行省略号保布局 */
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.game-hud button {
-  height: 52rpx;
-  line-height: 48rpx;
-  font-size: 22rpx;
-  padding: 0 16rpx;
+/* jingText 很长（赣州：「正精 北 · 副精 东（其余 10 张结算揭晓）」）→ 单独一色 + 省略号 */
+.g-top-item.jing {
+  color: #e0a86a;
 }
 
-/* 收起态聊天钮（HUD 内）：未读红点跟在 emoji 后面 */
-.chat-fab {
+.g-top .badge {
+  font-size: 10px;
+  padding: 1px 8px;
+  flex-shrink: 0;
+}
+
+.g-top .code {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+/* ---------- 侧边按钮轨（rail） ---------- */
+/*
+ * 左右各一列 36px 的浮层按钮，absolute 贴在 .game-main 两缘、垂直居中。
+ * **绝不占流宽、也绝不压画布**：fitCanvas 的 min(行宽 − 84, 行高×2) 保证画布两侧
+ * 各留 ≥ 42px 空白；原生 canvas 合成层级高于 DOM，压在画布上的钮会被盖住点不到
+ * （2026-10-17 实测 cover-view 都盖不住 canvas，详见 §10.8⑦）。
+ * 手机横屏画布被行高卡住（宽有富余）→ 轨落在纯空白区；宽窗口画布吃宽度 → 让出的
+ * 84px 正好归轨。骰子阶段整轨隐藏（diceShown，覆盖层已盖满全页）。
+ */
+.rail {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 5;
+}
+
+.rail-l {
+  left: 2px;
+}
+
+.rail-r {
+  right: 2px;
+}
+
+.rail-btn {
+  width: 36px !important;
+  height: 36px;
+  line-height: 34px;
+  padding: 0;
+  text-align: center;
+  font-size: 17px;
+  border-radius: 999px;
+  color: #e8e2cf;
+  background: rgba(16, 26, 21, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   position: relative;
+  flex-shrink: 0;
 }
 
-.fab-badge {
-  margin-left: 4rpx;
+/* 面板打开态 / 托管激活态：金底（与参考图右列同款） */
+.rail-btn.on {
+  background: rgba(230, 193, 75, 0.22);
+  border-color: rgba(230, 193, 75, 0.85);
+  color: #f6e3a1;
+}
+
+.rail-btn.danger {
   color: #e07a6a;
+  border-color: rgba(224, 122, 106, 0.5);
+}
+
+/* 未读红点：贴在聊天钮右上角 */
+.rail-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 16px;
+  height: 16px;
+  line-height: 16px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 10px;
   font-weight: 700;
 }
 
-/* ---------- 画布 + 左右侧栏 ---------- */
+/* ---------- 记录 / 聊天弹层面板 ---------- */
 /*
- * gap 必须与 game.js 的 SIDE_GAP 一致（px，不是 rpx）：fitCanvas 用
- * 「行宽 − 侧栏宽 − gap×栏数」反算画布宽度，rpx 会随屏宽缩放，一旦对不上
- * 画布就会溢出或留缝。所以这里刻意写死 px。
+ * 面板是 .game-main 的**子元素**（absolute inset:0）而不是 .game 的：
+ * .game-main 正好就是「牌桌区」，面板盖上去不遮底部手牌条 —— 看记录/聊天时
+ * 牌局还在走，手牌必须留着能出。配合 panelOpen 把 canvas 切 display:none
+ * （原生组件合成层级在 DOM 之上，不藏面板会被牌桌盖住），与 .on-modal 同机制。
+ */
+.side-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 10, 16, 0.55);
+  border-radius: 12rpx;
+}
+
+.panel-card {
+  width: min(72vw, 560px);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: rgba(16, 26, 21, 0.97);
+  border: 2rpx solid rgba(255, 255, 255, 0.16);
+  border-radius: 14rpx;
+  overflow: hidden;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+.chat-card {
+  width: min(64vw, 480px);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 2rpx solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.panel-title {
+  font-size: 13px;
+  color: #f6e3a1;
+  font-weight: 700;
+}
+
+.panel-x {
+  width: 26px !important;
+  height: 26px;
+  line-height: 24px;
+  padding: 0;
+  text-align: center;
+  font-size: 13px;
+  color: #9db5a8;
+  background: transparent;
+}
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 10px;
+}
+
+/* ---------- 牌桌行 ---------- */
+/*
+ * 2026-10-21：三栏（记录 | 画布 | 聊天）废除，画布独占整行；记录/聊天改成左右
+ * 侧边钮 + 弹层面板（见上方 .rail / .side-panel），所以这里**不再有 gap**，
+ * 也不需要再和 JS 常量对齐侧栏宽。position:relative 是 .rail/.side-panel 的定位基准。
  */
 .game-main {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: row;
-  gap: 6px;
+  position: relative;
 }
 
-/* 左右侧栏：宽度由 fitCanvas 算好后写在行内 style 上（px），这里只管外观 */
-.side-col {
-  flex-shrink: 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  background: rgba(16, 26, 21, 0.96);
-  border: 2rpx solid rgba(255, 255, 255, 0.14);
-  border-radius: 14rpx;
-  overflow: hidden;
-}
-
-.side-title {
-  padding: 8rpx 12rpx;
-  font-size: 22rpx;
-  color: #f6e3a1;
-  border-bottom: 2rpx solid rgba(255, 255, 255, 0.08);
-  flex-shrink: 0;
-}
-
-.side-title-inline {
-  font-size: 22rpx;
-  color: #f6e3a1;
-}
-
-.side-body {
-  flex: 1;
-  min-height: 0;
-  padding: 6rpx 10rpx;
-}
-
-/* 窄栏里一行放不下「座位 + 动作 + 牌 + 备注」→ 允许换行，别横向溢出。
-   座位名不再吃 min-width：侧栏可能只有 110px 宽，留着固定宽度会把每条记录挤成两行。 */
-.side-body .log-row {
-  flex-wrap: wrap;
-}
-
-.side-body .log-seat {
-  min-width: 0;
-}
-
-/* 侧栏聊天标题行右侧的快捷语 / 表情钮（底部输入行在窄栏里放不下四个元素） */
-.chat-bar-tools {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-}
-
-.chat-bar-tools .chat-ico {
-  width: 44rpx !important;
-  height: 44rpx;
-  line-height: 42rpx;
-  font-size: 20rpx;
-}
-
+/*
+ * 画布贴操作区底边（2026-10-20 出血对齐）：画布在「行宽 < 行高×2」时高度吃不满
+ * wrap（宽约束），原来垂直居中会上下都留 felt 空隙、与手牌条隔着一条缝；
+ * 改 flex-end 让牌桌坐在手牌条正上方（无垂直余量时与原来完全一致 —— 手机横屏
+ * 常态就是这种：canvasH = 行高，改动零表现）。
+ */
 .canvas-wrap {
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
   position: relative;
 }
 
+/*
+ * 画布自身不再带 border-radius（2026-10-22）：桌面现在是**整屏**的（见 .felt），
+ * 画布只是桌面中间的一扇窗，给画布倒角等于在绿绒桌中间抠出一个圆角矩形，
+ * 而且画布四角露出的是 DOM 底色，与 canvas 里同图不同源，会有一圈色差。
+ * display:block 不能省 —— canvas 是行内元素，行内会有基线空隙、画布高度被撑大。
+ */
 .canvas-wrap canvas {
   display: block;
-  border-radius: 12rpx;
 }
 
 /*
@@ -198,9 +352,9 @@
 }
 
 /*
- * 刘海/挖孔探测元素（computeSafeInsets 用）：宽度直接写成 env(safe-area-inset-left/right)，
- * SelectorQuery 量它的宽 = 当前运行时里 env() 的真实解析值。0 高 + absolute + 不可见，
- * 不占布局、不挡点击。
+ * 刘海/挖孔探测元素（computeSafeInsets 用）：宽/高直接写成 env(safe-area-inset-left/right/top)，
+ * SelectorQuery 量它的宽/高 = 当前运行时里 env() 的真实解析值。0 尺寸 + absolute + 不可见，
+ * 不占布局、不挡点击。`#safe-probe-l/r` 写 width（横向量），`#safe-probe-t` 写 height（顶部量）。
  */
 .safe-probe {
   position: absolute;
@@ -219,6 +373,11 @@
   width: env(safe-area-inset-right, 0px);
 }
 
+#safe-probe-t {
+  width: 0;
+  height: env(safe-area-inset-top, 0px);
+}
+
 /*
  * 提示浮层（事件/错误 toast）在局内改到手牌条（出牌器）**上方**——
  * app.wxss 的 `.toast` 是 fixed bottom:40rpx，正好压在手牌条上（用户截图红框）。
@@ -231,67 +390,16 @@
   bottom: 156rpx;
 }
 
-/* ---------- 局内聊天（流内右列；窄屏展开 / 宽屏常驻） ---------- */
+/* ---------- 局内聊天（只在侧边弹层面板里出现，2026-10-21） ---------- */
+/*
+ * 聊天从「流内右列 / HUD 圆钮展开」并入侧边轨 💬 弹窗（.panel-card.chat-card）。
+ * 这里只留面板内部用的样式：消息区 + 快捷语/表情 + 输入行。
+ */
 .chat {
-  flex-shrink: 0;
-  align-self: stretch;
-  width: 420rpx;
   min-width: 0;
-  background: rgba(16, 26, 21, 0.96);
-  border: 2rpx solid rgba(255, 255, 255, 0.14);
-  border-radius: 14rpx;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-/*
- * 宽屏侧栏模式：宽度已由 fitCanvas 按剩余空间算好（行内 style），
- * 必须把 420rpx / 紧凑档的 32vw + min-width:240px + max-width:320px 全部让开，
- * 否则 min-width 会把内联宽度顶回去（min-width 优先于 width）。
- */
-.chat.sided {
-  width: auto;
-  min-width: 0;
-  max-width: none;
-}
-
-/* 侧栏模式没有页签，聊天区要吃掉整列高度（不再受 300rpx 上限约束） */
-.chat.sided .chat-log {
-  max-height: none;
-}
-
-.chat-bar {
-  display: flex;
-  align-items: center;
-  gap: 8rpx;
-  padding: 8rpx 10rpx;
-  border-bottom: 2rpx solid rgba(255, 255, 255, 0.08);
-}
-
-.chat-tab {
-  height: 48rpx;
-  line-height: 44rpx;
-  font-size: 22rpx;
-  padding: 0 14rpx;
-  background: transparent;
-}
-
-.chat-tab.active {
-  background: rgba(230, 193, 75, 0.18);
-  color: #f6e3a1;
-}
-
-.chat-min {
-  /* margin-left:auto + width 都要 !important：前者被 app.wxss 的 margin:0!important
-     覆盖、后者破 button:not([size='mini']) 的内置 184px 定宽 */
-  margin-left: auto !important;
-  width: 48rpx !important;
-  height: 48rpx;
-  line-height: 44rpx;
-  padding: 0;
-  text-align: center;
-  font-size: 24rpx;
 }
 
 .chat-log,
@@ -481,6 +589,72 @@
   justify-content: center;
 }
 
+/*
+ * 操作钮艺术图变体（2026-10-21 起，2026-10-23 补齐吃/暗杠/自摸/展示）：
+ * 吃/碰/杠/胡/过 全走 CDN 位图（utils/uiart.js），图上再压一行小注（牌名/牌型）。
+ * 设计约束：
+ *   · 总高 ≈ 图高（小注用负边距压回图下缘）—— claim-mask 与手牌条同高，
+ *     顶出去的部分会被原生 canvas 合成层挡住（真机实测 cover-view 都盖不住 canvas）；
+ *   · display/margin 要压 app.wxss 的全局 `button{}` !important 四条；
+ *   · 清单未就绪时类里没有 .art，整块退回上面的文字钮。
+ */
+.ctrl.art {
+  display: block !important;
+  height: auto;
+  line-height: 1;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  margin: 2rpx 8rpx !important;
+}
+.ctrl.art .ctrl-img {
+  display: block;
+  width: 92rpx;
+  height: 78rpx;
+  margin: 0 auto;
+}
+.ctrl.art .ctrl-cap {
+  display: block;
+  margin: -12rpx auto 0;
+  padding: 1rpx 8rpx;
+  max-width: 108rpx;
+  border-radius: 999rpx;
+  background: rgba(8, 12, 18, 0.72);
+  color: #f2e6c8;
+  font-size: 18rpx;
+  line-height: 20rpx;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * 同屏 ≥7 个钮时的**全体小号**（2026-10-23）：7 个钮（吃 3 组 + 碰/杠/胡 + 过）按
+ * 92rpx 排一行要 7×108 = 756rpx > 750rpx 基准，必然换行并顶出 claim-mask（实测溢出
+ * 16~21px）。**必须全体一起缩** —— 只缩吃钮会让同屏图标大小不一（用户报「有的显示
+ * 更大有的更小」）。76rpx 时 7×92 = 644rpx < 750rpx，一行放得下。
+ */
+.ctrl.art.compact .ctrl-img {
+  width: 76rpx;
+  height: 64rpx;
+}
+.ctrl.art.compact .ctrl-cap {
+  margin-top: -10rpx;
+  padding: 1rpx 6rpx;
+  max-width: 86rpx;
+  font-size: 16rpx;
+  line-height: 18rpx;
+}
+
+/* 结算艺术字：面板标题上方的胜利/失败/平局（CDN；未就绪整块不渲染） */
+.settle-art {
+  display: block;
+  width: 320rpx;
+  height: 178rpx;
+  margin: 0 auto 6rpx;
+}
+
 /* 操作区容器：手牌与遮罩共用同一块区域，遮罩绝对定位盖在手牌上。
    min-height 与手牌条同高 —— 万一某状态下手牌没渲染，遮罩也要有落脚空间。
    结算态整块不渲染（WXML overPhase），高度归还画布。 */
@@ -556,17 +730,82 @@
   display: flex;
   /* scroll-x 里必须单行：靠溢出横向滚动，不能 wrap */
   flex-wrap: nowrap;
+  /*
+   * 2026-10-21 **局中居中对齐**（用户报「手牌应该局中对齐」）。
+   * 之前是 space-between「出血对齐」——但条宽是按 14 张满编预算的（handTrayW =
+   * max(画布宽, 14 张需求)）：有副露时手上只剩 7~10 张，space-between 把空余全摊到
+   * 牌缝里，真机实测 7 张牌被 57px 的大间隙拉散（截图 1016 图素里只有 7 组牌）。
+   * 现在双保险居中，两条路径都通向同一个中心轴：
+   *   ① width:max-content + margin:0 auto —— 行收缩到内容宽，auto 外边距在条内居中；
+   *      内容超宽（iPad 分屏这类真要横滑的极端窄窗）时过约束 → 外边距归 0，
+   *      行从左端起排，滚动行为不变（若用 center 居中溢出会左右都溢出、左边滚不到）。
+   *   ② justify-content:center —— 万一某台老 webview 不支持 max-content，行仍是整条宽，
+   *      靠 flex 居中同样把牌群聚在中间，绝不回到「摊大饼」。
+   * 牌群在条内居中 → 条由 board-overlay 的 margin:0 auto 与画布同中心轴（见 WXML）。
+   */
+  width: max-content;
+  margin: 0 auto;
   justify-content: center;
-  padding: 2rpx 0;
+  padding: 1px 0;
+  /*
+   * 2026-10-21：3D 后仰已废除（用户要「手牌是正的」，见 .tile-btn）。
+   * 这一层现在只剩布局职责，不再有任何 transform / perspective。
+   */
 }
 
+/*
+ * 手牌牌面**正视**（2026-10-21，用户报「手牌上的牌上小下大」）。
+ * 2026-10-18 引入的 3D 后仰（perspective + rotateX(16°)）让每张牌都是上窄下宽的
+ * 梯形 —— 用户要的是「正的」，所以 transform 整条去掉，只保留阴影的层次感。
+ * 透视距离变量（CSS 自定义属性）与 handMetrics 的 handPersp 一并废除（无消费者）。
+ */
 .tile-btn {
-  width: 76rpx;
-  height: 92rpx;
-  margin: 0 3rpx;
-  border-radius: 8rpx;
+  box-shadow: 0 3px 7px rgba(0, 0, 0, 0.34), 0 1px 2px rgba(0, 0, 0, 0.26);
+}
+
+.tile-btn:active {
+  box-shadow: 0 5px 10px rgba(0, 0, 0, 0.42), 0 1px 3px rgba(0, 0, 0, 0.32);
+}
+
+/*
+ * ===== 手牌牌位：**px 定尺 + 按条宽自适应**（2026-10-21 修「手牌为啥还能滑动」）=====
+ *
+ * 演进（三次事故，都是同一个病根：两个真相）：
+ *   ① 76rpx×92rpx 配 rpx 字号 —— rpx 基准是窗口宽，牌位随窗口放大到 131×158，
+ *      还被 aspectFill 上下裁 8.4%（「牌面被切」）。
+ *   ② px 定尺 46×66 + px 字号 —— 裁切治好了，但手牌条宽度绑 canvasW（画布 2:1 反算），
+ *      手机横屏画布只有 ~410px，14 张要 679px → 必须横向滚动（「还能滑动」）。
+ *   ③ 现在：尺寸/字号的**上限**仍是 46×66 / 25·12·27（全档统一 px），但由 fitCanvas
+ *      的 handMetrics 按实测行宽算出实际值，经 CSS 变量（牌宽、牌高、摸牌左距、
+ *      三个字号、透视距离）写到 .tray-row 上；条不够宽就整排同比缩小，
+ *      绝不再出现「放不下只能滚」。
+ *      ⚠️ 注释里**不要写出这几个变量的连写形式**（形如 --a/--b/--c）：其中的
+ *      「星斜杠」会把注释提前闭合，后面整条规则会被当成无效选择器丢掉 ——
+ *      2026-10-21 实测翻车过一次，症状是「设了变量但牌位毫无变化」。
+ *
+ * 变量默认值 = 上限值：首帧还没量到布局、或极端窄窗缩到 HAND_MIN_W 之前，观感一致。
+ * **不要再往 @media 档里写第二份尺寸**（③之前的 ≤700px 档就是那么翻车的）——
+ * 自适应已经覆盖了所有宽度，断点档只该管高度/字号以外的布局。
+ */
+.tile-btn {
+  width: var(--tw, 46px);
+  height: var(--th, 66px);
+  /*
+   * border-box：`--tw` 必须是牌的**真实外宽**。改前是 content-box，46px 的 width
+   * 外加 1px 边框 → 实际占 48px，而 handMetrics 按 46 算，14 张恰差 28px 排不进条宽
+   * （2026-10-21 实测）。边框归位后「牌宽 = --tw」，算式与渲染逐像素一致。
+   */
+  box-sizing: border-box;
+  margin: 0 1px;
+  /*
+   * 2026-10-20：**不许被压缩**。之前 overflow 时 flex 默认 shrink 会把牌挤成
+   * 十几像素宽的细条（用户报「手牌显示异常」：中间几张筒变成竖细条）——
+   * 现在条宽由 handMetrics 保证排得下，这里是双保险。
+   */
+  flex-shrink: 0;
+  border-radius: 4px;
   background: #f8f5ec;
-  border: 2rpx solid #c9c2b0;
+  border: 1px solid #c9c2b0;
   display: flex;
   /* 牌面是矢量文字：数牌两行（数字在上、花色在下），风箭牌一行大字 */
   flex-direction: column;
@@ -577,7 +816,7 @@
 }
 
 .tile-btn.drawn {
-  margin-left: 16rpx;
+  margin-left: var(--ml-drawn, 8px);
   border-color: #e6c14b;
 }
 
@@ -616,22 +855,23 @@
   height: 100%;
 }
 .tile-rank {
-  font-size: 40rpx;
+  /* 三个字号与牌位同比例（handMetrics 的 k），永远装得进牌面 */
+  font-size: var(--fs-rank, 25px);
   font-weight: 700;
   line-height: 1;
   color: #1a1a2e;
 }
 
 .tile-suit {
-  font-size: 20rpx;
+  font-size: var(--fs-suit, 12px);
   font-weight: 700;
   line-height: 1;
-  margin-top: 2rpx;
+  margin-top: 1px;
   color: #1a1a2e;
 }
 
 .tile-honor {
-  font-size: 44rpx;
+  font-size: var(--fs-honor, 27px);
   font-weight: 700;
   line-height: 1;
   color: #1a1a2e;
@@ -757,9 +997,10 @@
  */
 @media (max-height: 680px) {
   .game {
-    padding: 4px calc(8px + max(var(--safe-r, 0px), env(safe-area-inset-right, 0px)))
-      calc(4px + env(safe-area-inset-bottom, 0px))
-      calc(8px + max(var(--safe-l, 0px), env(safe-area-inset-left, 0px)));
+    padding-top: calc(3px + max(var(--safe-t, 0px), env(safe-area-inset-top, 0px)));
+    padding-right: calc(8px + max(var(--safe-r, 0px), env(safe-area-inset-right, 0px)));
+    padding-bottom: calc(3px + env(safe-area-inset-bottom, 0px));
+    padding-left: calc(8px + max(var(--safe-l, 0px), env(safe-area-inset-left, 0px)));
   }
 
   .banner {
@@ -768,91 +1009,84 @@
     font-size: 11px;
   }
 
-  .game-hud {
-    margin-bottom: 2px;
+  /* 自绘顶栏紧凑档：24px 高（竖档 28px），信息字号压到 10/11px */
+  .g-top {
+    height: 24px;
+    gap: 6px;
+    margin-bottom: 1px;
+  }
+
+  .g-top-back {
+    width: 22px;
+    height: 22px;
+    line-height: 20px;
+    font-size: 15px;
+  }
+
+  .g-top-info {
     gap: 6px;
   }
 
-  .hud-group {
+  .g-top-item,
+  .g-top .code {
+    font-size: 10px;
+  }
+
+  .g-top .badge {
+    font-size: 9px;
+    padding: 0 6px;
+  }
+
+  .g-top-cap {
+    width: 104px;
+  }
+
+  /* 侧边轨紧凑档：32px 直径，间距 6px */
+  .rail {
     gap: 6px;
   }
 
-  .hud-label,
-  .hud-sep {
-    font-size: 10px;
+  .rail-btn {
+    width: 32px !important;
+    height: 32px;
+    line-height: 30px;
+    font-size: 15px;
   }
 
-  .hud-item {
-    font-size: 11px;
+  .rail-badge {
+    min-width: 14px;
+    height: 14px;
+    line-height: 14px;
+    font-size: 9px;
   }
 
-  .badge {
-    font-size: 10px;
-    padding: 1px 8px;
-  }
-
-  /* HUD 里的房间码：app.wxss 的 .code 只有 rpx 字重/字距，没有矮视口字号 */
-  .code {
-    font-size: 11px;
-  }
-
-  .game-hud button {
-    height: 26px;
-    line-height: 24px;
-    font-size: 11px;
-    padding: 0 10px;
-  }
-
-  .fab-badge {
-    font-size: 10px;
-  }
-
-  .game-main {
-    gap: 6px;
-  }
-
-  .side-col {
+  /* 弹层面板紧凑档：贴边距更小、消息/记录字号 10px */
+  .panel-card {
+    width: min(86vw, 560px);
     border-radius: 10px;
   }
 
-  .side-title {
-    padding: 4px 6px;
-    font-size: 11px;
+  .chat-card {
+    width: min(78vw, 480px);
   }
 
-  .side-title-inline {
-    font-size: 11px;
+  .panel-head {
+    padding: 4px 8px;
   }
 
-  .side-body {
-    padding: 3px 5px;
-  }
-
-  /* 聊天列：随视口宽取 32vw，封顶 320px（矮宽窗口里 vw 比 rpx 可控） */
-  .chat {
-    width: 32vw;
-    min-width: 240px;
-    max-width: 320px;
-    border-radius: 10px;
-  }
-
-  .chat-bar {
-    padding: 4px 6px;
-    gap: 4px;
-  }
-
-  .chat-tab {
-    height: 26px;
-    line-height: 24px;
-    font-size: 11px;
-    padding: 0 8px;
-  }
-
-  .chat-min {
-    width: 26px !important;
-    height: 26px;
-    line-height: 24px;
+  .panel-title {
     font-size: 12px;
+  }
+
+  .panel-x {
+    width: 22px !important;
+    height: 22px;
+    line-height: 20px;
+    font-size: 11px;
+  }
+
+  .panel-body {
+    padding: 3px 8px;
   }
 
   .chat-log,
@@ -900,13 +1134,6 @@
     height: 28px;
     line-height: 26px;
     font-size: 13px;
-  }
-
-  .chat-bar-tools .chat-ico {
-    width: 22px !important;
-    height: 22px;
-    line-height: 20px;
-    font-size: 11px;
   }
 
   .chat-input {
@@ -998,35 +1225,11 @@
   }
 
   /*
-   * 手牌 46×66（原 46×60）。**宽度总占位一分不变**（14 张 × 48 = 672 + 定张 8 = 680，
-   * 与 46×60 + 1.5px 边距时完全一样），所以不会让任何一台设备从「放得下」变成「要横滑」；
-   * 多出来的 6px 全给高度：46/66 = 0.697，几乎等于真实牌面比例 0.688（原来 0.767 偏方）。
-   * 牌面字号 +3px 是这次观感提升的主要来源（数字 25 / 花色 12 / 风箭 27）。
+   * 2026-10-21：`.tile-btn / .tile-rank / .tile-suit / .tile-honor` 的四条
+   * 覆盖已经删掉 —— 牌位与字号现在是**全档统一的 px 定尺**（46×66 / 25/12/27，
+   * 见文件上方「手牌牌位」注释）。这里再写一遍只会制造第二个真相，
+   * 日后改一处忘了另一处就会重演「rpx 尺寸配 px 字号」的裁切事故。
    */
-  .tile-btn {
-    width: 46px;
-    height: 66px;
-    margin: 0 1px;
-    border-radius: 4px;
-  }
-
-  .tile-btn.drawn {
-    margin-left: 8px;
-  }
-
-  /* 牌面字号跟手牌尺寸走：46×66 下数字 25px / 花色 12px，风箭牌 27px */
-  .tile-rank {
-    font-size: 25px;
-  }
-
-  .tile-suit {
-    font-size: 12px;
-    margin-top: 1px;
-  }
-
-  .tile-honor {
-    font-size: 27px;
-  }
 
   /* 浮层 */
   .layer-card {
@@ -1112,35 +1315,14 @@
 }
 
 /*
- * 窄横屏（≤700 CSS px）：手牌 13~14 张一行放不下，缩小牌面兜底
- * （scroll-view 能滚，此档只是让整排更容易一屏放下）。
- * 断点 620 → 700：手牌放大到 46px 后，14 张 + 间距需要 683px，
- * 667/568 这类窄横屏必须先缩档，否则会横向溢出（虽然能滚，但看不全）。
+ * 窄横屏（≤700 CSS px）：**手牌相关的一条都不写**。
+ * 这里曾经放着一份 39×55 / 21·10·23 的缩小档，断点按**窗口宽**判断；而手牌条宽度
+ * 绑 canvasW（2:1 反算），844px 的横屏手机命中不了 700px 档、牌却照样放不下 ——
+ * 两个真相互相补不齐（用户报「手牌为啥还能滑动」）。
+ * 2026-10-21 起牌位/字号由 handMetrics 按实测条宽统一下发（CSS 变量），所有宽度
+ * 一份真相；此档只保留与手牌无关的控件尺寸。
  */
 @media (max-width: 700px) {
-  /* 极窄横屏（≤700px）：14 张放不下 46px，退到 39×55 —— 总占位 574px，667 也放得下 */
-  .tile-btn {
-    width: 39px;
-    height: 55px;
-    margin: 0 1px;
-  }
-
-  .tile-btn.drawn {
-    margin-left: 6px;
-  }
-
-  .tile-rank {
-    font-size: 21px;
-  }
-
-  .tile-suit {
-    font-size: 10px;
-  }
-
-  .tile-honor {
-    font-size: 23px;
-  }
-
   .controls button {
     height: 28px;
     line-height: 26px;

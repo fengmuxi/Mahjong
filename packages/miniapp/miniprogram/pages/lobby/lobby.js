@@ -25,7 +25,10 @@ Page({
     readyText: '准备',
     allReady: false,
     showDissolve: false,
-    showAddBot: false,
+    // 2026-10-21：「加机器人」不再按人数出现/消失（那会让右邻按钮跳位），改房主恒在 + 满员置灰
+    isHost: false,
+    botFull: false,
+    leaveAskShown: false,
     drShown: false,
     drText: '打骰子',
     drDisabled: false,
@@ -157,7 +160,8 @@ Page({
       readyText: me && me.ready ? '取消准备' : '准备',
       allReady: !!s.allReady,
       showDissolve: !!(me && me.isHost),
-      showAddBot: !!(me && me.isHost) && (s.players || []).length < 4,
+      isHost: !!(me && me.isHost),
+      botFull: (s.players || []).length >= 4,
       drShown: inDealerRoll,
       drDisabled: !!dealerRolls.find((r) => r.seat === s.you) || !me || (s.players || []).length < 4,
       drText: dealerRolls.find((r) => r.seat === s.you)
@@ -288,7 +292,18 @@ Page({
     room.send({ t: 'ready', ready: !cancelling });
   },
 
+  /**
+   * 离开房间（2026-10-21 加二次确认）：用户报「点得快很容易误点离开房间」——
+   * 除了底部行不再跳位，这里再兜一层，误触最多弹框。
+   */
   onLeave() {
+    this.setData({ leaveAskShown: true });
+  },
+
+  onLeaveConfirm(e) {
+    const accept = e.currentTarget.dataset.accept === '1';
+    this.setData({ leaveAskShown: false });
+    if (!accept) return;
     room.leaveRoom();
     wx.reLaunch({ url: '/pages/home/home' });
   },
@@ -314,6 +329,11 @@ Page({
 
   onAddBot() {
     if (!net.isOpen()) return;
+    // 连点节流（2026-10-21）：加机器人是一来一回的异步动作，连发只会让服务端一次加多人、
+    // 回包错序，用户侧看着就是「点快了乱跳」。400ms 内只认第一下。
+    const now = Date.now();
+    if (now - (this._botAt || 0) < 400) return;
+    this._botAt = now;
     room.send({ t: 'addBot' });
   },
 

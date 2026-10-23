@@ -1,135 +1,134 @@
 <!-- 掷骰覆盖层是两页共用的模板（样式在 app.wxss），import 必须在文件顶层 -->
 <import src="/templates/dice.wxml" />
 
-<view class="{{pageLeaving ? 'page-leaving' : ''}} page game bg-cloud" style="--safe-l:{{safeL}}px; --safe-r:{{safeR}}px">
-  <!-- 刘海/挖孔探测元素：宽度直接写成 env(safe-area-inset-left/right)，
+<view class="{{pageLeaving ? 'page-leaving' : ''}} page game bg-cloud" style="--safe-l:{{safeL}}px; --safe-r:{{safeR}}px; --safe-t:{{safeT}}px">
+  <!-- 刘海/挖孔探测元素：宽/高直接写成 env(safe-area-inset-left/right/top)，
        computeSafeInsets 用 SelectorQuery 把它量回来 —— 量到的就是当前运行时里
-       env() 的真实解析值（0 高、不可见，不影响布局与点击） -->
+       env() 的真实解析值（0 尺寸、不可见，不影响布局与点击）。
+       注意顶部探测元素量的是**高度**（#safe-probe-t），左右两侧量的是宽度。 -->
   <view id="safe-probe-l" class="safe-probe"></view>
   <view id="safe-probe-r" class="safe-probe"></view>
+  <view id="safe-probe-t" class="safe-probe"></view>
   <view class="banner" wx:if="{{netShown}}">{{netText}}</view>
 
-  <!-- HUD -->
-  <view class="game-hud">
-    <view class="hud-group">
-      <text class="hud-label">玩法</text>
+  <!--
+    整屏桌面（2026-10-22「牌桌铺满 + 手牌坐在桌上」）：
+    绿绒龙纹桌铺满整个页面（含顶栏、两侧按钮轨、底部手牌条底下），
+    画布那一块由 canvas 用**同一个矩形**画同一张图，两层像素级对齐 → 看不出接缝。
+    用 <image mode="scaleToFill"> 而不是 WXSS 的 background-image：
+      · 走的是**和手牌牌面同一条链路**（<image src> / downloadFile 合法域名 + 微信侧缓存），
+        牌面能显示，这一层就一定能显示，少一个排查变量；
+      · scaleToFill 就是「非等比拉满」，与 canvas 侧 drawImage 的整铺映射完全一致。
+    拿不到桌面图（清单未就绪 / 部署漏带 public/ui）时退成纯色块：
+    UI 整通道失败退成矢量桌的藏青，免得画布里藏青桌 + 页面绿绒两块桌面拼在一起。
+    z-index:0 + pointer-events:none：纯背景，不参与点击。
+  -->
+  <image wx:if="{{feltUrl}}" class="felt" src="{{feltUrl}}" mode="scaleToFill"></image>
+  <view wx:else class="felt {{feltNavy ? 'na' : ''}}"></view>
+
+  <!--
+    自绘顶栏（2026-10-21，game.json navigationStyle=custom）：
+    原来这里是「原生导航栏(44px) + HUD(30px)」两行，现在合成一行 28px 的极简信息条，
+    牌桌高度净赚 ~44px（这就是「放大中心牌面区域」）。右侧留 CAPSULE_W 给系统胶囊。
+  -->
+  <view class="g-top">
+    <!-- 返回 = 解散对局：本项目的页面跳转全是 redirectTo（room.js 的跳转合并），
+         没有可 navigateBack 的栈；且中途离桌服务端会把 `game` 广播回来、人又被拽回
+         牌桌（room.js 的自愈逻辑）。所以「离开」只能走 abort，与右轨 ✕ 同一确认框。 -->
+    <view class="g-top-back" bindtap="onAbort">‹</view>
+    <view class="g-top-info">
       <text class="badge">{{variantLabel}}</text>
-      <text class="hud-sep">|</text>
-      <text class="hud-label">房间</text>
       <text class="code">{{code}}</text>
-      <text class="hud-sep">|</text>
-      <text class="hud-item">{{wallText}}</text>
-      <text class="hud-item" wx:if="{{jingText}}">{{jingText}}</text>
+      <text class="g-top-item">{{wallText}}</text>
+      <text class="g-top-item jing" wx:if="{{jingText}}">{{jingText}}</text>
     </view>
-    <view class="hud-group">
-      <!--
-        聊天收起态 = HUD 上的圆钮：不占牌桌高度、不会 floating 压画布/手牌条，
-        未读红点跟在后面。展开后面板占右侧一列（流内元素），与画布并排。
-        宽屏侧栏模式（sideCols）聊天恒在右侧常驻列，这个圆钮就不需要了。
-      -->
-      <button class="ghost chat-fab" wx:if="{{chatCollapsed && !sideCols && !diceShown}}" bindtap="onToggleChat">💬<text class="fab-badge" wx:if="{{chatUnread > 0}}">{{chatUnread > 99 ? '99+' : chatUnread}}</text></button>
-      <button class="ghost {{autoOn ? 'on' : ''}}" wx:if="{{autoShown}}" bindtap="onAuto">{{autoOn ? '托管中' : '托管'}}</button>
-      <button class="ghost" bindtap="onEmoteOpen">🎯 互动</button>
-      <button class="danger" wx:if="{{dissolveGameShown}}" bindtap="onAbort">解散对局</button>
-    </view>
+    <view class="g-top-cap"></view>
   </view>
 
   <!--
-    三栏：操作记录（左） | 牌桌画布（中） | 聊天（右）。
-    左右两栏只在「画布之外真有富余宽度」时才出现（fitCanvas 用 #game-main 实测算出
-    sideCols/logW/chatW）：手机横屏 (1.78:1) 画布本来就把宽度吃满，余量为 0 →
-    两栏都不渲染，行为与之前完全一致；宽窗口 (≥2:1) 才把空白利用起来。
+    牌桌独占整行（2026-10-21 重排）：记录 / 聊天从流内三栏改成**侧边按钮 + 弹窗**，
+    左边一枚 📋、右边 💬/🤖/🎯/✕，全部 absolute 浮在画布两侧的空白区上（不占流宽）。
+    轨绝不压画布矩形 —— fitCanvas 的 min(行宽−84, 行高×2) 保证画布两侧各留 ~42px。
   -->
   <view class="game-main" id="game-main">
-    <!-- 左：局内操作记录（按时间正序，滚动到底跟随最新一步） -->
-    <view class="side-col log-col" wx:if="{{sideCols && logW > 0}}" style="width: {{logW}}px;">
-      <view class="side-title">操作记录</view>
-      <scroll-view class="side-body" scroll-y scroll-top="{{logScrollTop}}">
-        <view wx:for="{{logRows}}" wx:key="seq" class="log-row">
-          <text class="log-seat">{{item.seatName}}</text>
-          <text class="log-action {{item.actionClass}}">{{item.action}}</text>
-          <text class="log-tiles" wx:if="{{item.tiles}}">{{item.tiles}}</text>
-          <text class="log-note" wx:if="{{item.note}}">{{item.note}}</text>
-        </view>
-      </scroll-view>
+    <view class="rail rail-l" wx:if="{{!diceShown}}">
+      <button class="rail-btn {{logOpen ? 'on' : ''}}" bindtap="onToggleLog">📋</button>
     </view>
 
     <view class="canvas-wrap" id="canvas-wrap">
       <canvas
         id="table"
         type="2d"
-        class="{{modalOpen ? 'on-modal' : ''}}"
+        class="{{modalOpen || panelOpen ? 'on-modal' : ''}}"
         style="width: {{canvasW}}px; height: {{canvasH}}px;"
         bindtap="onCanvasTap"
       ></canvas>
     </view>
 
-    <!--
-      右：聊天。宽屏常驻（sideCols）；窄屏仍是「HUD 💬 圆钮 → 展开面板」的旧交互，
-      展开时带「聊天 / 记录」两个页签（记录在窄屏下没有独立栏位）。
-    -->
-    <view
-      class="chat {{sideCols ? 'sided' : ''}}"
-      wx:if="{{sideCols || !chatCollapsed}}"
-      style="{{sideCols && chatW > 0 ? 'width:' + chatW + 'px;' : ''}}"
-    >
-      <view class="chat-bar" wx:if="{{sideCols}}">
-        <text class="side-title-inline">聊天</text>
-        <!-- 侧栏比窄屏面板窄，快捷语/表情钮挪到标题行，把底部输入行让给输入框 + 发送 -->
-        <view class="chat-bar-tools">
+    <view class="rail rail-r" wx:if="{{!diceShown}}">
+      <button class="rail-btn {{chatOpen ? 'on' : ''}}" bindtap="onToggleChat">💬<text class="rail-badge" wx:if="{{chatUnread > 0}}">{{chatUnread > 99 ? '99+' : chatUnread}}</text></button>
+      <button class="rail-btn {{autoOn ? 'on' : ''}}" wx:if="{{autoShown}}" bindtap="onAuto">🤖</button>
+      <button class="rail-btn" bindtap="onEmoteOpen">🎯</button>
+      <button class="rail-btn danger" wx:if="{{dissolveGameShown}}" bindtap="onAbort">✕</button>
+    </view>
+
+    <!-- 记录面板（左轨 📋 触发）：absolute 盖在牌桌区，不遮底部手牌条 -->
+    <view class="side-panel" wx:if="{{logOpen}}">
+      <view class="panel-card log-card">
+        <view class="panel-head">
+          <text class="panel-title">操作记录</text>
+          <button class="panel-x" bindtap="onToggleLog">✕</button>
+        </view>
+        <scroll-view class="panel-body" scroll-y scroll-top="{{logScrollTop}}">
+          <view wx:for="{{logRows}}" wx:key="seq" class="log-row">
+            <text class="log-seat">{{item.seatName}}</text>
+            <text class="log-action {{item.actionClass}}">{{item.action}}</text>
+            <text class="log-tiles" wx:if="{{item.tiles}}">{{item.tiles}}</text>
+            <text class="log-note" wx:if="{{item.note}}">{{item.note}}</text>
+          </view>
+        </scroll-view>
+      </view>
+    </view>
+
+    <!-- 聊天面板（右轨 💬 触发）：快捷语 / 表情 / 输入行，与旧窄屏面板同一套组件 -->
+    <view class="side-panel" wx:if="{{chatOpen}}">
+      <view class="panel-card chat-card">
+        <view class="panel-head">
+          <text class="panel-title">聊天</text>
+          <button class="panel-x" bindtap="onToggleChat">✕</button>
+        </view>
+        <scroll-view class="chat-log" scroll-y scroll-into-view="chat-end">
+          <view wx:for="{{chatMsgs}}" wx:key="*this" class="chat-msg {{item.self ? 'self' : ''}}">
+            <text class="chat-name">{{item.name}}：</text><text class="chat-text">{{item.text}}</text>
+          </view>
+          <view id="chat-end"></view>
+        </scroll-view>
+        <scroll-view class="chat-pop" scroll-y wx:if="{{quickShown}}">
+          <view class="chat-pop-row">
+            <button wx:for="{{quickList}}" wx:key="*this" class="chat-chip" data-text="{{item}}" bindtap="onQuickTap">{{item}}</button>
+          </view>
+        </scroll-view>
+        <scroll-view class="chat-pop" scroll-y wx:if="{{emojiShown}}">
+          <view class="chat-pop-row">
+            <button wx:for="{{emojiList}}" wx:key="*this" class="chat-chip" data-text="{{item}}" bindtap="onEmojiTap">{{item}}</button>
+          </view>
+        </scroll-view>
+        <view class="chat-input-row">
           <button class="chat-ico" data-pop="quick" bindtap="onTogglePop">💬</button>
           <button class="chat-ico" data-pop="emoji" bindtap="onTogglePop">😊</button>
+          <input
+            class="chat-input"
+            value="{{chatInput}}"
+            maxlength="{{chatMax}}"
+            placeholder="说点什么…"
+            bindinput="onChatInput"
+            bindconfirm="onSendChat"
+            adjust-position="{{true}}"
+            cursor-spacing="20"
+            confirm-type="send"
+          />
+          <button class="primary chat-send" bindtap="onSendChat">发送</button>
         </view>
-      </view>
-      <view class="chat-bar" wx:else>
-        <button class="chat-tab {{chatTab === 'chat' ? 'active' : ''}}" data-tab="chat" bindtap="onChatTab">聊天</button>
-        <button class="chat-tab {{chatTab === 'log' ? 'active' : ''}}" data-tab="log" bindtap="onChatTab">记录</button>
-        <button class="chat-min" bindtap="onToggleChat">—</button>
-      </view>
-
-      <scroll-view class="chat-log" scroll-y scroll-into-view="chat-end" wx:if="{{sideCols || chatTab === 'chat'}}">
-        <view wx:for="{{chatMsgs}}" wx:key="*this" class="chat-msg {{item.self ? 'self' : ''}}">
-          <text class="chat-name">{{item.name}}：</text><text class="chat-text">{{item.text}}</text>
-        </view>
-        <view id="chat-end"></view>
-      </scroll-view>
-
-      <scroll-view class="log-list" scroll-y wx:if="{{!sideCols && chatTab === 'log'}}">
-        <view wx:for="{{logRows}}" wx:key="seq" class="log-row">
-          <text class="log-seat">{{item.seatName}}</text>
-          <text class="log-action {{item.actionClass}}">{{item.action}}</text>
-          <text class="log-tiles" wx:if="{{item.tiles}}">{{item.tiles}}</text>
-          <text class="log-note" wx:if="{{item.note}}">{{item.note}}</text>
-        </view>
-      </scroll-view>
-
-      <!-- 快捷语 / 表情：scroll-view 才能真正滚动（普通 view 的 overflow:scroll 在小程序里不生效） -->
-      <scroll-view class="chat-pop" scroll-y wx:if="{{quickShown}}">
-        <view class="chat-pop-row">
-          <button wx:for="{{quickList}}" wx:key="*this" class="chat-chip" data-text="{{item}}" bindtap="onQuickTap">{{item}}</button>
-        </view>
-      </scroll-view>
-      <scroll-view class="chat-pop" scroll-y wx:if="{{emojiShown}}">
-        <view class="chat-pop-row">
-          <button wx:for="{{emojiList}}" wx:key="*this" class="chat-chip" data-text="{{item}}" bindtap="onEmojiTap">{{item}}</button>
-        </view>
-      </scroll-view>
-
-      <view class="chat-input-row" wx:if="{{sideCols || chatTab === 'chat'}}">
-        <button class="chat-ico" wx:if="{{!sideCols}}" data-pop="quick" bindtap="onTogglePop">💬</button>
-        <button class="chat-ico" wx:if="{{!sideCols}}" data-pop="emoji" bindtap="onTogglePop">😊</button>
-        <input
-          class="chat-input"
-          value="{{chatInput}}"
-          maxlength="{{chatMax}}"
-          placeholder="说点什么…"
-          bindinput="onChatInput"
-          bindconfirm="onSendChat"
-          adjust-position="{{true}}"
-          cursor-spacing="20"
-          confirm-type="send"
-        />
-        <button class="primary chat-send" bindtap="onSendChat">发送</button>
       </view>
     </view>
   </view>
@@ -145,7 +144,16 @@
     顺序（自上而下）：错误 → 状态行（右侧可挂「本局结算 ▲」） → 吃碰杠胡 → 手牌。
     结算态只剩状态行一行，其余高度全给画布（用户报「结算时麻将区域应该放大」）。
   -->
-  <view class="board-overlay" wx:if="{{!modalOpen}}">
+  <!--
+    2026-10-20「出血对齐」→ 2026-10-21 自适应：操作区宽度由 fitCanvas 的 handMetrics
+    算出（`handTrayW`），而不是直接绑 canvasW。
+    为什么改：画布宽 = min(行宽, 行高×2)，手机横屏行高只有 ~200px → 画布被压到 ~410px，
+    比 14 张手牌排满所需的 679px 窄得多，手牌条只能横向滚动（用户报「还能滑动」）。
+    现在规则是「画布宽与 14 张排满所需取大、再被行宽截断」：PC/平板与画布同宽（旧行为），
+    手机横屏放宽到 679px 做满宽手牌带，行宽还不够就把牌位同比缩小（见 handMetrics）——
+    任何横屏窗口都不靠滚动看全，状态行 / 吃碰杠胡遮罩 / 手牌条与画布仍左右对齐居中。
+  -->
+  <view class="board-overlay" wx:if="{{!modalOpen}}" style="width: {{handTrayW}}px; margin: 0 auto;">
     <!--
       状态行**恒占一行**（不再随控件出现/消失增删）：
       之前用 wx:if 藏起来，控件一出现这行就消失 → 操作区总高变化 → 画布重排跳动
@@ -167,9 +175,12 @@
       结算态（overPhase）整块不渲染 —— 手牌已无意义，腾出的高度留给牌桌放大。
     -->
     <view class="tray-stack" wx:if="{{!overPhase}}">
-      <!-- 手牌：吃碰杠胡选择期也显示（不看手牌没法判断该碰还是该胡） -->
-      <scroll-view class="hand-tray {{trayActive ? 'active' : ''}}" scroll-x wx:if="{{trayShown}}">
-        <view class="tray-row">
+      <!-- 手牌：吃碰杠胡选择期也显示（不看手牌没法判断该碰还是该胡）
+           2026-10-21：牌位/字号由 handMetrics 经 CSS 变量下发（--tw/--th/…），
+           整排永远排得进条宽；scroll-x 只在极端窄窗（< HAND_MIN_W 也放不下 14 张，
+           如 iPad 分屏）才真正滚得动，bounces=false 关掉 iOS「内容放得下也能拽一下」的回弹。 -->
+      <scroll-view class="hand-tray {{trayActive ? 'active' : ''}}" scroll-x bounces="{{false}}" wx:if="{{trayShown}}">
+        <view class="tray-row" style="--tw:{{handTileW}}px; --th:{{handTileH}}px; --ml-drawn:{{handMlDrawn}}px; --fs-rank:{{handFsRank}}px; --fs-suit:{{handFsSuit}}px; --fs-honor:{{handFsHonor}}px">
           <view
             wx:for="{{tray}}"
             wx:key="key"
@@ -215,11 +226,17 @@
           <button
             wx:for="{{controls}}"
             wx:key="text"
-            class="ctrl {{item.ghost ? '' : 'primary'}} {{item.disabled ? 'disabled' : ''}}"
+            class="ctrl {{item.ghost ? '' : 'primary'}} {{item.disabled ? 'disabled' : ''}} {{item.art ? 'art' : ''}} {{ctrlCompact ? 'compact' : ''}}"
             disabled="{{item.disabled}}"
             data-idx="{{index}}"
             bindtap="onControl"
-          >{{item.text}}</button>
+          >
+            <!-- 有 CDN 艺术图（吃/碰/杠/胡/过）时：图 + 压在图下缘的小注（牌名/牌型）。
+                 清单未就绪时整块退回纯文字钮，行为与旧版一致。 -->
+            <image wx:if="{{item.art}}" class="ctrl-img" src="{{item.art}}" mode="aspectFit"></image>
+            <text wx:if="{{item.art && item.cap}}" class="ctrl-cap">{{item.cap}}</text>
+            <block wx:else>{{item.text}}</block>
+          </button>
         </view>
       </view>
     </view>
@@ -268,6 +285,8 @@
   <!-- 结算面板 -->
   <view class="layer" wx:if="{{settleShown}}">
     <view class="layer-card settle-card">
+      <!-- 结算艺术字（胜利/失败/平局，CDN；未就绪不渲染，标题文字独自成立） -->
+      <image wx:if="{{settleArt}}" class="settle-art" src="{{settleArt}}" mode="aspectFit"></image>
       <view class="layer-title">{{settleTitle}}</view>
       <scroll-view class="settle-body" scroll-y scroll-x>
         <view class="tbl">

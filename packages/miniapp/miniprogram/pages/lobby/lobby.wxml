@@ -70,11 +70,22 @@
     </view>
   </view>
 
-  <view class="btn-row">
+  <!--
+    底部动作行（2026-10-21 稳定性重排，用户报「点得快很容易误点离开房间」）。
+    根因不是「按钮挨得近」，而是**按钮会消失**：原来「加机器人」在人数满 4 时
+    整个从行里摘掉，右侧「离开房间」立刻**左移一个身位**，连点的手指正好落在它上面。
+    三条改动：
+      1. 「加机器人」房主**恒在**，满员时置灰 + 文案「人已满」→ 位置钉死，连点落在禁用钮上；
+      2. 「离开房间」用弹性占位推到行尾，与左侧动作**保留最小 24rpx 间隙**（不再顺手指）；
+      3. 「离开房间」本身加二次确认（见下方 layer）—— 误触最多弹框，不会直接退房。
+  -->
+  <view class="btn-row lobby-actions">
     <button class="primary" bindtap="onToggleReady">{{readyText}}</button>
-    <button wx:if="{{showAddBot}}" bindtap="onAddBot">加机器人</button>
-    <button bindtap="onLeave">离开房间</button>
+    <!-- 文案等长（加机器人 / 已满4人 都是 4 字）：满员时按钮宽度不变 → 右侧按钮一格都不动 -->
+    <button wx:if="{{isHost}}" disabled="{{botFull}}" bindtap="onAddBot">{{botFull ? '已满4人' : '加机器人'}}</button>
     <button class="danger" wx:if="{{showDissolve}}" bindtap="onDissolve">解散牌桌</button>
+    <view class="act-spacer"></view>
+    <button class="leave-btn" bindtap="onLeave">离开房间</button>
   </view>
 
   <!-- 掷骰覆盖层（与对局页共用模板 templates/dice.wxml；样式在 app.wxss） -->
@@ -88,6 +99,20 @@
       <view class="btn-row end">
         <button data-accept="0" bindtap="onSwapRespond">拒绝</button>
         <button class="primary" data-accept="1" bindtap="onSwapRespond">同意</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 离开房间二次确认（2026-10-21，用户报「点得快很容易误点离开房间」）：
+       与「解散牌桌」同一套页内 layer（wx.showModal 在本环境不可靠）。
+       离开会释放座位、要重新输房间码，误触代价不小 → 必须明确点「离开」。 -->
+  <view class="layer" wx:if="{{leaveAskShown}}">
+    <view class="layer-card">
+      <view class="layer-title">离开房间</view>
+      <view class="layer-text">离开后座位会释放，再回来需要重新输入房间码。</view>
+      <view class="btn-row end">
+        <button data-accept="0" bindtap="onLeaveConfirm">再等等</button>
+        <button class="danger" data-accept="1" bindtap="onLeaveConfirm">离开</button>
       </view>
     </view>
   </view>

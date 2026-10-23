@@ -31,10 +31,67 @@ const DIST = path.resolve(__dirname, '../../client/dist');
  * 联网加载：包体 0 字节，流量走 CDN（34 张 WebP 共约 251KB，带长缓存）。
  */
 const TILES_DIR = path.resolve(__dirname, '../public/tiles');
+/**
+ * UI 贴图 CDN 资源目录（`npm run gen_ui_cdn` 产出）：牌背/操作钮/结算艺术字/庄标/数字。
+ * 与牌面同思路 —— 不进代码包，经 `GET /api/ui` 清单下发，客户端「有图用图、无图回退矢量」。
+ */
+const UI_DIR = path.resolve(__dirname, '../public/ui');
+/**
+ * UI 贴图分组（2026-10-23 静态资源分类整理）：
+ *   hand    手牌相关：back 牌背 · back_op 暗杠扣牌 · inhand_l/inhand_r 左右家手牌侧影
+ *   operate 操作钮：chi/peng/gang/hu/guo（中心动画字样同图）
+ *   settle  结算艺术字：win/lost/draw
+ *   hud     桌面 HUD：table 桌面 · banker 庄标 · d0..d9 大数字
+ *   bg      web 端背景平铺纹理：bg-cloud/bg-lattice
+ * （faceA..faceD 平放牌图集 2026-10-23 移往牌面大类：/api/tiles 的 faces 子清单）
+ * 清单值 = `<group>/<key>.webp` 相对路径（客户端 urlOf 拼 `${base}/ui/${值}`，不感知分组）。
+ */
+const UI_GROUPS = ['hand', 'operate', 'settle', 'hud', 'bg'] as const;
+/**
+ * 局内音效目录（2026-10-23）：与牌面/UI 贴图同思路 —— **音频也不进代码包**
+ *（官方体检红线：主包 < 1.5MB、图+音 ≤ 200KB），经 `GET /api/sound` 清单下发。
+ */
+const SOUND_DIR = path.resolve(__dirname, '../public/sound');
+/** 音效资源版本号：换了音频就改它，客户端缓存自动失效 */
+const SOUND_VER = process.env.MAHJONG_SOUND_VER || 'v1';
+/**
+ * 音效键 → 文件名。**白名单**而不是扫目录：源项目还有一个 1MB 的「背景音乐.mp3」，
+ * 它既不进清单也不出 CDN（流量大、循环播放耗电），只留在 client/src/assets/sound 备查。
+ * 键名与小程序 utils/sound.js 的取用键一一对应。
+ */
+const SOUND_FILES: Record<string, string> = {
+  discard: 'discard.mp3',
+  deal: 'deal.mp3',
+  gang: 'gang.mp3',
+  peng: 'peng.mp3',
+  hu: 'hu.mp3',
+  click: 'click.mp3',
+};
 /** 对外 base：留空表示「与接口同源」，由小程序自己拼绝对地址 */
 const CDN_BASE = process.env.MAHJONG_CDN || '';
 /** 资源版本号：换了牌面美术就改它，客户端缓存会自动失效 */
-const TILES_VER = process.env.MAHJONG_TILES_VER || 'v1';
+const TILES_VER = process.env.MAHJONG_TILES_VER || 'v4';
+/**
+ * UI 贴图版本号（同上；与牌面分开，UI 换图不必让客户端重下 34 张牌面）。
+ * v1 → v2（2026-10-22）：v1 期间清单从 19 项扩到 24 项（加了 table + faceA..D）却**没抬版本号**，
+ * 老客户端于是长期吃缓存里那份 19 项清单 —— 整屏桌面没图、平放牌退回立牌。
+ * 客户端已改成「网络清单无条件覆盖缓存」，但版本号仍是**缓存失效开关**：
+ * 换过美术就抬一位，别省这一步。
+ * v12 → v13（2026-10-23）：faceA..faceD 平放牌图集移往牌面大类（/api/tiles faces 子清单），
+ * UI 清单 30 → 26 键、6 组 → 5 组。
+ * v11 → v12（2026-10-23）：UI 贴图**分组归档** —— public/ui 下按 hand/operate/settle/hud/seat/bg
+ * 六组建子目录，清单值改 `<group>/<key>.webp` 相对路径（URL 全变 = 缓存自然失效）。
+ * v10 → v11（2026-10-23）：新增 bg-cloud/bg-lattice 两个键 —— web 端背景纹理从
+ * vite 本地打包（dist 6MB）改为 CDN 清单加载（bg 走 1x 1024×1024，cloud 198KB/lattice 88KB）。
+ * v9 → v10（2026-10-23）：五个操作钮（chi/peng/gang/hu/guo）**画布与内容尺寸统一** ——
+ * 源图内容 bbox 统一裁到高 94、居中放进 113×94 画布（此前「过」只有 71×67，放进同一
+ * 92×78rpx 框后内容显示大 15%，「吃」偏小 → 同屏图标大小不一）。
+ * v8 → v9（2026-10-23）：新增 chi 操作钮（源 option_chi.png 2304×1728 缩到 113×94），
+ * 吃/暗杠/补杠/自摸/展示 从文字钮改图标钮；清单 27 → 28 项。
+ * v7 → v8（2026-10-23）：inhand_l / inhand_r 重生成 —— alpha 压实（源图边缘半透明在
+ * 26×56→17×16 大幅缩小后被滤波平均进牌身，叠绿桌整列发灰），牌身边际一律不透明。
+ */
+const UI_VER = process.env.MAHJONG_UI_VER || 'v13';
 const PORT = Number(process.env.PORT ?? 3130);
 const TURN_MS = Number(process.env.MAHJONG_TURN_MS ?? 15000);
 /** 掉线托管：回合者无连接时的自动出牌等待 */
@@ -410,6 +467,7 @@ function onGameOver(room: Room): void {
 
       const settle: ServerMsg = {
         t: 'settle',
+        winner: outcome.winner, // null = 流局（客户端据此选 draw 图标）
         title: winner !== null ? `${playerName(room, winner)} ${result}` : `${result} · 精分结算`,
         rows: [0, 1, 2, 3].map((s) => ({
           seat: s,
@@ -505,6 +563,7 @@ function onGameOver(room: Room): void {
 
     const settle: ServerMsg = {
       t: 'settle',
+      winner, // 本局赢家座位（客户端据此选 win/lost 图标）
       title: `${playerName(room, winner)} ${result}`,
       rows: [0, 1, 2, 3].map((s) => ({
         seat: s,
@@ -1604,26 +1663,121 @@ const server = http.createServer((req, res) => {
   try {
     const url = new URL(req.url ?? '/', 'http://localhost');
 
-    // 牌面资源清单：`GET /api/tiles` → { version, base, tiles: ['t00.webp', …] }
+    // 牌面资源清单：`GET /api/tiles` → { version, base, tiles: ['t00.webp', …], faces: { faceA:'face/faceA.webp', … } }
     // base 为空时，小程序用接口自身的 origin 拼出绝对地址。
     if (url.pathname === '/api/tiles') {
       const tiles = fs.existsSync(TILES_DIR)
         ? fs.readdirSync(TILES_DIR).filter((f) => /^t\d{2}\.webp$/.test(f)).sort()
         : [];
+      // 牌面大类两个子类：tiles 立牌（按牌值）+ faces 平放牌（按座位，faceA..faceD）
+      const facesDir = path.join(TILES_DIR, 'face');
+      const faces: Record<string, string> = {};
+      if (fs.existsSync(facesDir)) {
+        for (const f of fs.readdirSync(facesDir).filter((f) => /^face[A-D]\.webp$/.test(f)).sort()) {
+          faces[f.replace(/\.webp$/, '')] = `face/${f}`;
+        }
+      }
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
         // 清单本身要能被刷新（换版本时立刻生效），但缓存一下能省掉每次进房的往返
         'cache-control': 'public, max-age=300',
       });
-      res.end(JSON.stringify({ version: TILES_VER, base: CDN_BASE, tiles }));
+      res.end(JSON.stringify({ version: TILES_VER, base: CDN_BASE, tiles, faces }));
       return;
     }
 
     // 牌面静态资源 `/tiles/tNN.webp`：内容不变，可以长缓存（版本升级走清单里的 version）
     if (url.pathname.startsWith('/tiles/')) {
+      // 牌面大类：`/tiles/tXX.webp`（立牌）与 `/tiles/face/faceX.webp`（按座位平放牌）
+      const rel = decodeURIComponent(url.pathname.slice(7));
+      if (!/^(t\d{2}|face\/face[A-D])\.webp$/.test(rel)) {
+        res.writeHead(404).end();
+        return;
+      }
+      const file = path.join(TILES_DIR, rel);
+      if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': 'image/webp',
+        'cache-control': 'public, max-age=31536000, immutable',
+      });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+
+    // 局内音效清单：`GET /api/sound` → { version, base, sounds: { discard:'discard.mp3', … } }
+    // 音频同样不进代码包；键名与小程序 utils/sound.js 一一对应。
+    if (url.pathname === '/api/sound') {
+      const sounds: Record<string, string> = {};
+      if (fs.existsSync(SOUND_DIR)) {
+        for (const [k, f] of Object.entries(SOUND_FILES)) {
+          if (fs.existsSync(path.join(SOUND_DIR, f))) sounds[k] = f;
+        }
+      }
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'public, max-age=300',
+      });
+      res.end(JSON.stringify({ version: SOUND_VER, base: CDN_BASE, sounds }));
+      return;
+    }
+
+    // 音效静态资源 `/sound/xxx.mp3`：内容不变，长缓存（换版本走清单里的 version）
+    if (url.pathname.startsWith('/sound/')) {
       const name = path.basename(decodeURIComponent(url.pathname));
-      const file = path.join(TILES_DIR, name);
-      if (!/^t\d{2}\.webp$/.test(name) || !fs.existsSync(file)) {
+      const file = path.join(SOUND_DIR, name);
+      if (!/^[a-z0-9_]+\.mp3$/.test(name) || !fs.existsSync(file)) {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': 'audio/mpeg',
+        'cache-control': 'public, max-age=31536000, immutable',
+      });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+
+    // UI 贴图清单：`GET /api/ui` → { version, base, images: { back:'hand/back.webp', … } }（分组相对路径）
+    // 键名与小程序 utils/uiart.js 的取用键一一对应（back/peng/gang/hu/guo/win/lost/draw/banker/d0..d9）。
+    if (url.pathname === '/api/ui') {
+      // 分组清单：images[key] = `<group>/<key>.webp`（递归子目录，平铺残留自动忽略）
+      const images: Record<string, string> = {};
+      if (fs.existsSync(UI_DIR)) {
+        for (const g of fs.readdirSync(UI_DIR, { withFileTypes: true })) {
+          if (!g.isDirectory() || !UI_GROUPS.includes(g.name as (typeof UI_GROUPS)[number])) continue;
+          for (const f of fs.readdirSync(path.join(UI_DIR, g.name)).filter((f) => /\.webp$/.test(f)).sort()) {
+            images[f.replace(/\.webp$/, '')] = `${g.name}/${f}`;
+          }
+        }
+      }
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'public, max-age=300',
+      });
+      res.end(JSON.stringify({ version: UI_VER, base: CDN_BASE, images }));
+      return;
+    }
+
+    // UI 贴图静态资源 `/ui/<group>/<key>.webp`（2026-10-23 分组）：同牌面，长缓存
+    if (url.pathname.startsWith('/ui/')) {
+      // 原始串预检：合法 URL 不含 '..' 与百分号编码（WHATWG URL 虽已消除 dot segments，
+      // 但 %2e%2e 之类解码后仍可能跨组跳跃 —— 公开资源无安全影响，与分类规范不符，直接拒）
+      const rawUi = req.url || '';
+      if (rawUi.includes('..') || /%[0-9a-fA-F]{2}/.test(rawUi)) {
+        res.writeHead(404).end();
+        return;
+      }
+      const rel = decodeURIComponent(url.pathname.slice(4));
+      // 只认「已知组名单层 webp」：挡目录穿越（..）、平铺残留与非常规后缀
+      if (!UI_GROUPS.some((g) => rel.startsWith(g + '/')) || !/^[\w-]+\/[\w-]+\.webp$/.test(rel)) {
+        res.writeHead(404).end();
+        return;
+      }
+      const file = path.join(UI_DIR, rel);
+      if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
         res.writeHead(404).end();
         return;
       }
@@ -1656,6 +1810,34 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server, path: '/ws' });
+/**
+ * 端口占用要说人话（2026-10-22）。
+ *
+ * `new WebSocketServer({ server })` 会把 http.Server 的 'error' **转发到 wss 上**，
+ * 而没人接 wss 的 'error' → node 直接抛 Unhandled 'error' event，日志是一大段栈，
+ * 关键信息（`EADDRINUSE :::3130`）埋在最底下，完全看不出「端口被上一个没退干净的
+ * tsx/node 占了」。本项目里这个坑特别容易踩：`TaskStop` / 关掉终端都杀不掉 tsx 拉起
+ * 子进程，外壳结束了真正 listen 的 node 还活着，并且还在服务旧代码。
+ * 这里接住，把「怎么查 / 怎么杀 / 怎么换端口」直接印出来，并以 1 退出（别静默换端口 ——
+ * 客户端 WSS 地址是写死的，偷偷换端口只会表现成「连不上」）。
+ */
+wss.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(
+      [
+        '',
+        `❌ 端口 ${PORT} 已被占用：多半是上一个 tsx/node 没退干净（关终端/停任务都杀不掉子进程）。`,
+        `   查占用（PowerShell）：Get-NetTCPConnection -LocalPort ${PORT} -State Listen | Select-Object -Expand OwningProcess`,
+        `   结束进程：          Stop-Process -Id <上面查到的 PID> -Force`,
+        `   或换个端口起：      PORT=${PORT + 1} npm run dev:server`,
+        '',
+      ].join('\n'),
+    );
+    process.exit(1);
+  }
+  console.error('WebSocket 服务出错：', err);
+  process.exit(1);
+});
 /** 连接 → 最近一次确认存活的时间戳。笔记本合盖、Wi-Fi 掉线这类「半开连接」不会触发 close，
  *  只能靠 ping/pong 主动探活；超时未回应就掐断，让人走「掉线托管 + 重连宽限」，
  *  而不是让全桌等一个其实已经不在的人。 */
@@ -1741,5 +1923,38 @@ server.listen(PORT, () => {
     }
   }
   console.log(`响应窗口 ${TURN_MS}ms，掷骰补杠：${THROW_DICE ? '开' : '关'}`);
+  // 牌面素材自检（2026-10-20）：清单为空 = 客户端会**静默退回矢量牌面**，
+  // 表现成「牌面变成大字」。启动时把目录/张数打出来，部署漏带 public/tiles 一眼可见。
+  const tileCount = fs.existsSync(TILES_DIR)
+    ? fs.readdirSync(TILES_DIR).filter((f) => /^t\d{2}\.webp$/.test(f)).length
+    : 0;
+  console.log(
+    tileCount === 34
+      ? `牌面素材 ${TILES_DIR} · ${tileCount} 张 · 版本 ${TILES_VER}`
+      : `⚠ 牌面素材缺失（${TILES_DIR} 里只有 ${tileCount}/34 张）→ 客户端会退回矢量牌面；先跑 npm run build:cdn-tiles 或检查部署是否漏带 public/tiles`,
+  );
+  // UI 贴图自检（2026-10-21）：同理，清单为空 = 各绘制点回退矢量/文字
+  const uiFiles = fs.existsSync(UI_DIR)
+    ? UI_GROUPS.flatMap((g) => {
+        const d = path.join(UI_DIR, g);
+        return fs.existsSync(d) ? fs.readdirSync(d).filter((f) => /\.webp$/.test(f)).map((f) => `${g}/${f}`) : [];
+      })
+    : [];
+  const uiCount = uiFiles.length;
+  console.log(
+    uiCount >= 24
+      ? `UI 贴图 ${UI_DIR} · ${uiCount} 张 · 版本 ${UI_VER}`
+      : `⚠ UI 贴图缺失（${UI_DIR} 里只有 ${uiCount}/24 张）→ 牌背/操作钮/结算艺术字/桌面/座位平放牌会回退矢量；先跑 npm run gen:ui-cdn 或检查部署是否漏带 public/ui`,
+  );
+  // 局内音效自检（2026-10-23）：音效同样走 CDN 清单，缺文件 = 客户端静音回退（不影响对局）
+  const soundTotal = Object.keys(SOUND_FILES).length;
+  const soundCount = fs.existsSync(SOUND_DIR)
+    ? Object.keys(SOUND_FILES).filter((k) => fs.existsSync(path.join(SOUND_DIR, SOUND_FILES[k]))).length
+    : 0;
+  console.log(
+    soundCount === soundTotal
+      ? `局内音效 ${SOUND_DIR} · ${soundCount} 个 · 版本 ${SOUND_VER}`
+      : `⚠ 局内音效缺失（${SOUND_DIR} 里 ${soundCount}/${soundTotal} 个）→ 客户端静音回退；确认 public/sound 随版本一起发布`,
+  );
   console.log('SERVER_READY');
 });

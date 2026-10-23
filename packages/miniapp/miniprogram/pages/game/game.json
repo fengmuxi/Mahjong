@@ -1,5 +1,6 @@
 {
   "navigationBarTitleText": "麻将 · 对局",
   "pageOrientation": "landscape",
-  "disableScroll": true
+  "disableScroll": true,
+  "navigationStyle": "custom"
 }

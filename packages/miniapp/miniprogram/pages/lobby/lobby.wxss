@@ -42,6 +42,20 @@
   padding: 0 16rpx;
 }
 
+/*
+ * 底部动作行（2026-10-21，用户报「点得快很容易误点离开房间」）：
+ * 「离开房间」用**弹性占位**推到行尾，与左侧「准备 / 加机器人 / 解散」之间
+ * 至少留 24rpx 硬间隙（行宽富裕时占位继续撑开，退出类动作离得更远）。
+ * 不用 margin-left:auto —— app.wxss 的全局 `button{margin:0 !important}` 会把它吃掉。
+ */
+.lobby-actions {
+  align-items: center;
+}
+.lobby-actions .act-spacer {
+  flex: 1 1 24rpx;
+  min-width: 24rpx;
+}
+
 /* ---------- 主体：默认（高视口）单列；矮视口见底部 @media ---------- */
 .lobby-main {
   flex: 1;
