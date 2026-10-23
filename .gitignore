@@ -12,3 +12,6 @@ packages/miniapp/miniprogram/project.private.config.json
 # shared → 小程序 编译临时目录
 .tmp-mp-shared/
 .tmp-mp-verify/
+
+# 本地验证 harness 的输出（scripts/verify/*.cjs）
+.recover-tmp/
