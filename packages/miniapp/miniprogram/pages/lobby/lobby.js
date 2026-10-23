@@ -144,7 +144,9 @@ Page({
         state,
         offline,
         ready: !!(p && p.ready),
-        kickable: !!(p && p.isBot && me && me.isHost),
+        // 房主可把「别人」请出去：机器人的动作叫「移除」，真人叫「踢出」（2026-10-23）
+        kickable: !!(p && me && me.isHost && !isSelf),
+        kickLabel: p && p.isBot ? '移除' : '踢出',
         tip,
         tipClass,
         swappable: !isSelf && !(p && p.isBot),
@@ -357,9 +359,15 @@ Page({
     room.send({ t: 'swap', toSeat: seat });
   },
 
-  onRemoveBot(e) {
+  /**
+   * 房主请人出房间（2026-10-23）：一个入口两种动作 ——
+   * 机器人走 `removeBot`（原逻辑），真人走 `kick`（服务端会校验房主身份与对局相位）。
+   */
+  onSeatKick(e) {
     const seat = Number(e.currentTarget.dataset.seat);
-    room.send({ t: 'removeBot', seat });
+    if (!Number.isInteger(seat)) return;
+    if (e.currentTarget.dataset.bot) room.send({ t: 'removeBot', seat });
+    else room.send({ t: 'kick', seat });
   },
 
   onShare() {

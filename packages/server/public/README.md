@@ -12,7 +12,7 @@ public/
 │   │                               t27..t33 风箭（东南西北中发白 ×4 + 3 张）
 │   └── face/                       平放牌（按屏幕槽位，9×4 格图集，取子格绘制）
 │       └── faceA..faceD.webp        slot 0下/1右/2上/3左 → first..fourth（table.js tileimg.faceArt）
-├── ui/                    UI 贴图（5 组 26 张 · 版本 UI_VER）
+├── ui/                    UI 贴图（5 组 30 张 · 版本 UI_VER - v14）
 │   ├── hand/              手牌相关（4）★ 自家/对家/上下家手牌显示全在这组
 │   │   ├── back.webp              牌背：对家手牌（一排 14 张）、暗杠外的扣牌、立牌牌背
 │   │   ├── back_op.webp           暗杠专用扣牌（仅上下两家不换向，见 table.js back_op 规则）
@@ -22,10 +22,13 @@ public/
 │   │   ├── chi/peng/gang/hu/guo.webp   吃/碰/杠/胡/过（书法艺术字，113×94 画布统一规格）
 │   ├── settle/            结算面板顶部结果图标（3）
 │   │   └── win/lost/draw.webp     胜利/失败/平局（按本局赢家判定，见 game.js onSettle）
-│   ├── hud/               桌面 HUD（11）
+│   ├── hud/               桌面 HUD（15）
 │   │   ├── table.webp             桌面底图（1280×640，1x，DOM .felt 与 canvas 同映射）
 │   │   ├── banker.webp            庄标
-│   │   └── d0..d9.webp            大数字（0.688 比例）
+│   │   ├── d0..d9.webp            大数字（0.688 比例）
+│   │   └── room_time_0..3.webp    中心盘四向指示键（2026-10-24）：0 下/1 右/2 上/3 左
+│   │                              = 同一张 130×130 画布的四条边（箭头指向外），260×260 2x
+│   │                              按 bbox 裁切绘制，见 table.js ROOM_TIME_SRC
 │   └── bg/                web 端背景平铺纹理（2，1024×1024 1x）
 │       └── bg-cloud/bg-lattice.webp   style.css 经 --bg-texture 变量吃地址（main.ts applyBgTexture）
 └── sound/                 音频（独立分类，8 个 · 约 1.18MB · 版本 SOUND_VER）

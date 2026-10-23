@@ -254,12 +254,13 @@ Page({
       }
       this.setData({ errorShown: false });
       this.attempted = true;
-      room.connectAndSend({ t: 'join', code, name });
+      // pid = 本地稳定玩家 id：服务端先用 (pid, code) 找座位，找到就直接回原座位（掉线重进）
+      room.connectAndSend({ t: 'join', code, name, pid: store.ensurePid() });
       return;
     }
     this.setData({ errorShown: false });
     this.attempted = true;
-    room.connectAndSend({ t: 'create', name, variant: this.data.selectedVariant });
+    room.connectAndSend({ t: 'create', name, variant: this.data.selectedVariant, pid: store.ensurePid() });
   },
 
   // ---------- 路由回调 ----------

@@ -41,7 +41,7 @@
           </view>
           <view class="seat-state {{item.offline ? 'offline' : ''}}">{{item.state}}</view>
           <view class="seat-tip {{item.tipClass}}" wx:if="{{item.tip}}">{{item.tip}}</view>
-          <button class="seat-kick" wx:if="{{item.kickable}}" data-seat="{{item.seat}}" catchtap="onRemoveBot">移除</button>
+          <button class="seat-kick" wx:if="{{item.kickable}}" data-seat="{{item.seat}}" data-bot="{{item.bot}}" catchtap="onSeatKick">{{item.kickLabel}}</button>
         </view>
       </view>
 

@@ -149,6 +149,79 @@ export function gzDecompose(counts: number[], needSets: number, needPair: boolea
   return decompStep([...counts], 0, needSets, needPair, allowSeq);
 }
 
+/**
+ * 带「精可代牌」的分解（**只给精吊用**，2026-10-23 用户口径修订）。
+ *
+ * 用户澄清：赣州 12 张精里，只有**明面正精 + 它的副精**算「精」，其余精只按牌面计精分；
+ * 这两个牌面的精在**精吊形态**下可以代任意一张牌去凑面子 —— 例：
+ * 手牌 七条八条八条九条九条 + 二筒二筒，摸五萬：一张二筒当七条补成第二副七八九，
+ * 另一张二筒与五萬作将 → 精吊成立。
+ *
+ * 因此本函数只负责「面子」部分：`counts` 里**已经把精抽掉**（精的牌位置 0），
+ * `wild` = 可用于代牌的精张数，返回能否刚好凑出 `needSets` 组面子且**精全部用掉**。
+ * 将牌不在这里判（仍旧必须是「精 + 胡牌张」或精对，见 gzAnalyzeWin 的精吊分支）。
+ *
+ * · allowSeq=false 时只认刻子（大七对型）；
+ * · 顺子的起点允许落在「第一张实际持有的牌」之前 1~2 位（用精补低位），
+ *   否则「八九条 + 1 精」永远拼不出 七八九（这正是本例的关键）。
+ */
+export function gzDecomposeWild(
+  counts: number[],
+  needSets: number,
+  wild: number,
+  allowSeq: boolean,
+): boolean {
+  if (needSets < 0 || wild < 0) return false;
+  const c = [...counts];
+  for (let i = 0; i < 34; i++) c[i] = c[i] || 0;
+  return decompWildStep(c, 0, needSets, wild, allowSeq);
+}
+
+function decompWildStep(
+  counts: number[],
+  k: number,
+  setsLeft: number,
+  wild: number,
+  allowSeq: boolean,
+): boolean {
+  while (k < 34 && counts[k] === 0) k++;
+  if (k === 34) return wild === setsLeft * 3; // 只剩精：3 张精当一组面子
+  if (setsLeft === 0) return false;
+
+  const c = counts[k];
+  // ① 刻子：能用本张就用本张，不足的用精补
+  for (let use = Math.min(3, c); use >= 1; use--) {
+    const need = 3 - use;
+    if (need > wild) continue;
+    counts[k] = c - use;
+    const ok = decompWildStep(counts, k, setsLeft - 1, wild - need, allowSeq);
+    counts[k] = c;
+    if (ok) return true;
+  }
+
+  // ② 顺子（数牌）：起点可以比当前第一张牌低 1~2 位，缺的用精补
+  if (allowSeq && k < 27) {
+    const base = Math.floor(k / 9) * 9;
+    for (let start = Math.max(base, k - 2); start <= k; start++) {
+      if (start % 9 > 6) continue;
+      let need = 0;
+      for (let t = start; t < start + 3; t++) if (counts[t] === 0) need++;
+      if (need > wild) continue;
+      const dec: number[] = [];
+      for (let t = start; t < start + 3; t++) {
+        if (counts[t] > 0) {
+          counts[t]--;
+          dec.push(t);
+        }
+      }
+      const ok = decompWildStep(counts, k, setsLeft - 1, wild - need, allowSeq);
+      for (const t of dec) counts[t]++;
+      if (ok) return true;
+    }
+  }
+  return false;
+}
+
 // ---------- 吃牌选项（乱风，§四） ----------
 
 /**
@@ -256,10 +329,21 @@ export function gzAnalyzeWin(
       if (a === b && counts[a] < 2) return false;
       counts[a] -= 1;
       counts[b] -= 1;
+      // 面子分解：先按「精作本张」的标准分解（保持既有判定与底分档不变）；
+      // 不行时按 2026-10-23 用户口径，允许**剩下的精代任意牌**去补面子缺口。
+      // 例：七条八条八条九条九条 + 二筒二筒，将牌{二筒,五萬} → 另一张二筒当七条补第二副七八九。
+      const rest = [...counts];
+      let wild = 0;
+      for (const k of kinds) {
+        wild += rest[k];
+        rest[k] = 0;
+      }
       let r: 'runs' | 'trips' | false = false;
-      if (gzDecompose(counts, setsNeeded, false, true)) {
-        r = 'runs';
-        if (noChi && gzDecompose(counts, setsNeeded, false, false)) r = 'trips';
+      if (gzDecompose(counts, setsNeeded, false, true)) r = 'runs';
+      else if (wild > 0 && gzDecomposeWild(rest, setsNeeded, wild, true)) r = 'runs';
+      if (r === 'runs' && noChi) {
+        if (gzDecompose(counts, setsNeeded, false, false)) r = 'trips';
+        else if (wild > 0 && gzDecomposeWild(rest, setsNeeded, wild, false)) r = 'trips';
       }
       counts[a] += 1;
       counts[b] += 1;

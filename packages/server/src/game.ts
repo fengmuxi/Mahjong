@@ -172,6 +172,8 @@ export class Game {
   /** 本局操作记录（出牌 / 吃 / 碰 / 杠 / 胡 / 流局） */
   private actionLog: GameActionLog[] = [];
   private logSeq = 0;
+  /** 听牌提示缓存（每个座位一份，按「排序手牌+副露」签名失效，见 waitsFor） */
+  private waitsCache: { key: string; waits: Tile[] }[] = [];
   private rng: () => number;
   private throwDice: boolean;
   private ceremony: boolean;
@@ -522,6 +524,7 @@ export class Game {
           ? this.selfGangOptions(seat)
           : [],
       declareOptions: ritual ? [] : this.declareOptionsFor(seat),
+      declareEnabled: this.declaredEnabled,
       declared: [...this.declaredKongs].map(([tile, d]) => ({ seat: d.seat, tile })),
       mustDiscard: this.mustDiscardFor(seat),
       canZimo: zimoWin !== null && !ritual,
@@ -530,6 +533,7 @@ export class Game {
         this.phase === 'playing' && this.turn === seat && this.justDrew && this.lastDrawn !== null && !ritual
           ? this.lastDrawn
           : null,
+      waits: ritual ? [] : this.waitsFor(seat),
       connected: [true, true, true, true],
       auto: [false, false, false, false],
       names: ['', '', '', ''],
@@ -591,6 +595,64 @@ export class Game {
       if (c[t] === 3 && !this.declaredKongs.has(t)) out.push(t);
     }
     return out;
+  }
+
+  /**
+   * 听牌提示（2026-10-23）：当前手牌再摸到哪几张能「自摸胡」。**两种玩法都支持**：
+   * · 赣州：`gzAnalyzeWin`（含精吊 / 精代牌 / 有精限制）；
+   * · 南昌：`analyzeWin`（精＝赖子万能牌，七对/十三烂等特殊牌型一并算）。
+   *   两边都按「自摸」口径试算——点炮的额外限制（赣州点炮不许精吊、南昌点炮的精只按本张）
+   *   不参与，因为提示回答的是「我摸到它能不能自摸胡」。
+   *
+   * · 按**未摸牌**的 3n+1 张算（刚摸完还没打时先摘掉那张），提示的才是「听什么」；
+   * · 只用**公开信息**过滤死听（自己手牌 / 全部副露 / 全部牌河 / 赣州翻开的明面精），不窥视他家手牌。
+   * 成本实测 34 张全试 ≈ 0.2ms，四个座位一次广播 ≈ 0.8ms，不需要缓存。
+   */
+  private waitsFor(seat: number): Tile[] {
+    if (this.phase !== 'playing') return [];
+    const base = [...(this.hands[seat] ?? [])];
+    if (base.length % 3 === 2) {
+      const d = this.lastDrawn;
+      const i = d === null ? -1 : base.indexOf(d);
+      if (i >= 0) base.splice(i, 1);
+      else base.pop();
+    }
+    const melds = this.melds[seat] ?? [];
+    // 按「排序后的手牌 + 副露」做签名缓存：每次广播只有行动者那家手牌变了，
+    // 其余三家直接命中，避免每帧重算（南昌带赖子分解 34 张 ≈ 4.3ms，赣州 ≈ 0.2ms）。
+    const key = `${base.slice().sort((a, b) => a - b).join(',')}|${melds
+      .map((m) => m.tiles.join('+'))
+      .join(';')}`;
+    const slot = this.waitsCache[seat] || (this.waitsCache[seat] = { key: '', waits: [] });
+    if (slot.key === key) return slot.waits;
+
+    const gzJing = this.gzJing;
+    const out: Tile[] = [];
+    for (let t = 0; t < 34; t++) {
+      if (this.visibleRemain(seat, t) <= 0) continue; // 明面已经四张齐 → 摸不到
+      const hand = [...base, t];
+      const win =
+        this.gz && gzJing
+          ? gzAnalyzeWin(hand, melds, gzJing, false, t, 'zimo').valid
+          : analyzeWin(hand, melds, this.jingPi, this.jingFu).valid;
+      if (win) out.push(t);
+    }
+    slot.key = key;
+    slot.waits = out;
+    return out;
+  }
+
+  /** 该牌面明面上还剩几张（自己手牌 + 所有副露 + 所有牌河 + 翻开的明面精） */
+  private visibleRemain(seat: number, t: Tile): number {
+    let n = 0;
+    for (const x of this.hands[seat] ?? []) if (x === t) n++;
+    for (const ms of this.melds) for (const m of ms) for (const x of m.tiles) if (x === t) n++;
+    for (const r of this.rivers) for (const x of r) if (x === t) n++;
+    if (this.gzJing) {
+      if (this.gzJing.zheng[0] === t) n++;
+      if (this.gzJing.fu[0] === t) n++;
+    }
+    return 4 - n;
   }
 
   /** 报杠（§8.5）：展示手牌中恰好 3 张的同牌面 → 冻结这三张，他家此后必须打出第 4 张 */
@@ -1426,6 +1488,15 @@ export class Game {
   /** 是否存在未结束的响应窗口（服务端掉线托管 / 超时托管用） */
   get windowOpen(): boolean {
     return this.pending !== null;
+  }
+
+  /**
+   * 操作序号（单调递增，只增不减，不随 actionLog 的 500 条裁剪回退）。
+   * 服务端用它标识「这一次决策」，从而让机器人的随机思考时间在
+   * 掉线重连 / 旁人在同一窗口应答引起的重复推进中保持不变（见 index.ts 的 autoDelay）。
+   */
+  get actionSeq(): number {
+    return this.logSeq;
   }
 
   get awaitingSeats(): number[] {

@@ -61,19 +61,31 @@ const ACTION_FX_DUR = 1200;
 const W = 1280;
 const H = 640;
 /**
- * 牌张尺寸（2026-10-18 布局重排）。
+ * 牌张尺寸（2026-10-24 第八轮，**牌河改 6 列 × 3 行 + 格子再放大 26%**）。
  *
- * 改动前：对手手牌带占了四条边（每条 22~32 逻辑宽），牌河被挤在环内只剩 24×32 ——
- * 画布逻辑 1280 宽在真机上约 500 CSS px，牌河单张落到屏上只有 9×12，字和花色根本认不出。
- * 现在：
- *   · **删掉对手手牌带**（手牌张数改在铭牌上显示），四条边全部让给牌河；
- *   · 牌河 24×32 → **46×58**，屏上约 18×23（原来的 1.9 倍）；
- *   · 副露 32×42 → **40×52**，并从环外挪进环内四侧（环外给了牌河）。
- * 牌河每侧容量：上下 13×2=26，左右 5×8=40 —— 足够一局的最大弃牌数。
+ * 上一轮（38×50）不够用：画布物理只有 ~500×250 CSS px（`w = min(行宽−88, 行高×2)`，
+ * 横屏下恒被行高卡住），34~38 逻辑宽的牌落到屏上只有 12~15 CSS px。
+ * 而**牌的尺寸不是被画布卡住的，是被「每行几张」卡住的** —— 牌河每边要塞 24 张、
+ * 分 3 行就意味着一行 8 张，一行 8 张就意味着一格只能 38 宽。把每边容量降到
+ * **18 张（6 列 × 3 行）**，同样的区域里每格就能长到 48×63（+26%）。
+ *
+ * 为什么是 18：一局里单人最多弃 ~17~18 张（13 张起手 + 牌墙 67 张四家分），
+ * 偶尔多出一两张仍由 `riverCell` 的「溢出压末格」兜住（叠在最后一格上）。
+ * 每行 6 张也更接近真实麻将的牌河观感（原来 8 张一行偏宽）。
+ *
+ * 侧边（上家/下家）在牌主视角里也是「6 列 × 3 行」，屏幕上竖过来放：
+ * 3 个竖列 × 6 行，因此 `cols: 3, rows: 6` —— 用的是**同一套 48×63 格子**，
+ * 四家格子严格同尺寸（副露复用同格，见 `meldMetrics`）。
+ *
+ * ⚠ 四块牌河的原点必须重新解（贴盘侧钉死、往外圈长），否则贴盘那侧会被吃掉。
+ * 解出来的屏幕矩形（见 `.recover-tmp/geomshot.mjs` 实校）：
+ *   自己 495.7..784.3 × 426..556.2   对家 519.4..760.6 × 105.1..214
+ *   上家 295.4..466.0 × 234.3..405.7  下家 814..984.6（关于 640 镜像）
+ * 中心盘 480..800×226..422 一个像素没动。
  */
-const RIVER_W = 34;
-const RIVER_H = 44;
-const RIVER_DX = 54;
+const RIVER_W = 48;
+const RIVER_H = 63;
+const RIVER_DX = 56;
 const RIVER_DY = 66;
 /**
  * 牌河**叠压**（2026-10-22 第六轮，用户「各家的牌显示都存在像阶梯一样的效果，
@@ -81,8 +93,9 @@ const RIVER_DY = 66;
  *
  * 原来行距 ≥ 牌高（上/下 46 vs 44、左/右 36 vs 34），一行一行之间留着 2px 的缝，
  * 屏幕上是一块块分开的小牌（"阶梯"）。现在把行距压到牌高的 6 成左右：
- *   · 上/下：h=44，行距 **27** → 每张露出 61%、重叠 39%；
- *   · 左/右：h=34，行距 **21** → 每张露出 62%、重叠 38%。
+ *   · 上/下：h=63，行距 **38** → 每张露出 60%、重叠 40%；
+ *   · 左/右：h=48，行距 **30** → 每张露出 63%、重叠 37%。
+ * （2026-10-24 第八轮按 48×63 重取整，露出比例与历次一致。）
  *
  * **谁压在谁上面：四家统一「屏幕上更靠下的那张在上层」**（2026-10-22 第二轮定稿，
  * 用户先按「每人的下一张盖上一张」描述，之后纠正「对家的应该是上一排遮住下一排」）。
@@ -99,8 +112,8 @@ const RIVER_DY = 66;
  *
  * 副露**不叠**（组合必须张张可辨），仍保持 2px 紧排，见 `meldMetrics`。
  */
-const RIVER_LAP_FAR = 27;
-const RIVER_LAP_SIDE = 21;
+const RIVER_LAP_FAR = 38;
+const RIVER_LAP_SIDE = 30;
 /**
  * 牌墙开关（2026-10-20 用户决策：**取消四边牌堆**，把空间让给牌河/副露/手牌）。
  *
@@ -446,6 +459,36 @@ const OVER_SIDE = {
   handX: 138,
 };
 
+/** 结算摊牌（自己/对家那一排）的牌张尺寸与步距。
+ *  2026-10-24：40×50/44 → 43×54/47 → **48×60/52**（第八轮，跟牌河格 48×63 对齐）。
+ *  必须与 `revealOrigin()` 的居中算法用同一个 `REVEAL_DX`，否则牌排会偏一边。 */
+const REVEAL_W = 48;
+const REVEAL_H = 60;
+const REVEAL_DX = 52;
+
+/**
+ * 中心盘**四向指示键**（2026-10-24 用户要求：「哪家出牌时激活相应方向的指示器」）。
+ *
+ * 素材 `room_time_0..3` 是**同一张 130×130 画布里的四条边**（0 下 / 1 右 / 2 上 / 3 左），
+ * 叠在一起正好是个方框 —— 所以键值直接就是 `disp()` 的**屏幕槽位**，不用再做映射。
+ *
+ * 130 画布里大半是透明的（每条只占 23/130 厚），直接贴整张会把条缩到角落：
+ * 这里按 bbox 裁切绘制。bbox 一律存**归一化比例**而非像素，因此贴图换成 1x/2x/3x
+ * 都不用改代码（现有产物是 2x = 260×260，缩放时按 `img.width/height` 一次换算）。
+ * 实测 bbox（130 画布）：下 [14,94,103,23] · 右 [95,13,23,102] · 上 [14,11,103,23] · 左 [12,12,23,102]。
+ */
+const ROOM_TIME_SRC = {
+  0: [14 / 130, 94 / 130, 103 / 130, 23 / 130],
+  1: [95 / 130, 13 / 130, 23 / 130, 102 / 130],
+  2: [14 / 130, 11 / 130, 103 / 130, 23 / 130],
+  3: [12 / 130, 12 / 130, 23 / 130, 102 / 130],
+};
+/** 指示条显示尺寸（逻辑）：长边 116、厚 26，与素材 bbox 同比例（103:23 ≈ 4.48） */
+const RT_LONG = 116;
+const RT_THICK = 26;
+/** 激活指示条向外探出盘边多少（盘的金边上下有 12px 空缝，探 4 不碰牌河） */
+const RT_OUT = 4;
+
 /** 把「投影后的屏幕左缘」反算成 `drawTile` 的逻辑 x（配合 `z.k` 的整块缩放） */
 function screenToLogicX(sxScreen, k) {
   return W / 2 + (sxScreen - W / 2) / k;
@@ -536,6 +579,21 @@ const WALL_TILT = { sq: 0.94, ts: 0.965, dz: 1.05, zw: 1.3 };
  */
 const STAND_HUD = { sq: 1, ts: 1, dz: 1, proj: false, edge: 0, fx: 'flat' };
 
+/**
+ * 桌面**矢量兜底**的配色（2026-10-24）。
+ *
+ * 取值必须与 WXSS 里 DOM 桌面层的兜底色**逐字相同**，否则画布边界会切出一条色带：
+ *   · `felt` = `pages/game/game.wxss` 的 `.felt` background-color `#14614a`
+ *     （采样 table.webp 的绒布平均色；清单正常、贴图还在路上时 DOM 露的就是它）；
+ *   · `na`   = `.felt.na` 的 `#0d1626`（UI 整通道拿不到时的矢量桌外层藏青）。
+ * 由 game.js 的 `loadUiArt` 按 `feltUrl` 有无写进 `table.feltNavy` 来选择。
+ * `mid` 是中心那层径向渐变（绒布受光），`edge` 一律透明以露出 `base`，保证边缘同色。
+ */
+const FELT_FALLBACK = {
+  felt: { base: '#14614a', mid: 'rgba(26,116,89,0.85)', edge: 'rgba(20,97,74,0)' },
+  na: { base: '#0d1626', mid: 'rgba(35,64,95,0.85)', edge: 'rgba(13,22,38,0)' },
+};
+
 class Table {
   constructor(canvasNode, pixelRatio) {
     const ctx = canvasNode.getContext('2d');
@@ -588,6 +646,13 @@ class Table {
      * 为 null 时退回「铺满画布」的旧行为（截图/校验 harness 走的就是这条）。
      */
     this.frame = null;
+    /**
+     * 矢量兜底桌用哪套配色（2026-10-24）：true = 藏青 `.felt.na`（UI 整通道没起来），
+     * false = 绿绒 `.felt`（清单正常、贴图还在路上）。**必须与 DOM 层当下的兜底色一致**，
+     * 由 game.js 的 `loadUiArt` 每次写完 `feltUrl` 后同步进来，见 `FELT_FALLBACK`。
+     * 默认 true（还没拉到清单时的状态，与 `feltNavy: true` 的初始 data 对齐）。
+     */
+    this.feltNavy = true;
     this.applyBackingStore();
   }
 
@@ -684,22 +749,7 @@ class Table {
      * 避免画面在打断瞬间跳变（用户报「显示错位和异常」）。
      */
     const fresh = this.collectNewActions(view);
-    for (const a of fresh) {
-      if (ACTION_FX_KINDS.indexOf(a.kind) < 0) continue;
-      const now = Date.now();
-      const prev = this.actionFx;
-      const pose = prev
-        ? this.fxPose(prev, Math.max(0, Math.min(1, (now - prev.t0) / ACTION_FX_DUR)))
-        : null;
-      this.actionFx = {
-        kind: a.kind,
-        seat: a.seat,
-        t0: now,
-        seq: Number(a.seq) || 0,
-        s0: pose ? pose.scale : 1.55,   // 接管起点：无旧动画 = 完整缩放入场
-        a0: pose ? pose.alpha : 0,
-      };
-    }
+    this.applyActionFx(fresh);
 
     const deal = this.dealProgress(view);
     this.dealing = deal !== null;
@@ -803,26 +853,50 @@ class Table {
       ctx.drawImage(bg, R.x, R.y, R.w, R.h);
       return;
     }
-    // 2026-10-20 藏青桌面 + 木金框（用户参考图为深蓝桌布 + 暖金外框的商业牌桌）：
-    // 只换色系与框型，投影梯形几何一行不动（drawTable 是背景，不参与牌张几何校验）。
-    // 金框用「4px 主边 + 内侧 1px 暖金高光」双线，不做雕花纹理 —— 参考图的雕花框是
-    // 受保护素材，只借鉴「桌布深色 + 外框暖金」的结构与氛围。
-    ctx.fillStyle = '#0d1626';
-    ctx.fillRect(0, 0, W, H);
-    // 2026-10-20 侧视俯瞰：桌面本体 = 投影梯形（顶边收敛 58%、底边满宽）。
-    // 收敛后上下两角留出深色「桌外」区 —— 四角铭牌正好落在那里（参考图同款构图），
-    // 中心区域收敛感最强，牌的可读重头（近边/自己侧）几乎不受影响。
-    const z = { proj: true };
-    quadPath(ctx, projQuad(8, 8, W - 16, H - 16, z), 18);
-    ctx.fillStyle = '#23405f';
-    ctx.fill();
-    ctx.strokeStyle = '#a8823c';
-    ctx.lineWidth = 4;
-    ctx.stroke();
-    quadPath(ctx, projQuad(14, 14, W - 28, H - 28, z), 14);
-    ctx.strokeStyle = 'rgba(255,214,120,0.32)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    /*
+     * 矢量兜底桌（2026-10-24 重写：**跟着 frame 铺满整屏，不再画老版的投影梯形**）。
+     *
+     * 老版本（2026-10-20）这里画的是「侧视俯瞰」的梯形桌面（顶边收敛 58%），
+     * 那时画布就是牌桌本身。2026-10-22 起桌面改成**整屏的一扇窗**（DOM `.felt` 铺外圈、
+     * canvas 铺内圈、同一映射），只有贴图那条路跟着改了，兜底这条还留在梯形年代 ——
+     * 于是「有图」是平铺满屏、「没图」是斜的梯形桌，两种状态观感完全不同。
+     *
+     * 现在的兜底必须满足两条：
+     *   ① **铺的区域 = frame 矩形**，与贴图那条 `drawImage(bg, R.x, R.y, R.w, R.h)`
+     *      完全同一映射（frame 为 null 时退回铺满画布）；
+     *   ② **底色 = DOM 层当下的兜底色**（`FELT_FALLBACK`，由 game.js 按 `feltUrl` 有无
+     *      写进 `this.feltNavy`），否则画布边界会切出一条色带。
+     * 金框画在 **frame 的内缩 8px** 上（对应贴图自带的木框，位置在**页面**边缘）——
+     * 因此在真机横屏上它落在画布之外、看不见，画布里就是干净的一块绒布，与「有图」一致。
+     * 不做雕花纹理：参考图的雕花框是受保护素材，只借鉴「桌布深色 + 外框暖金」的结构。
+     */
+    const fb = FELT_FALLBACK[this.feltNavy ? 'na' : 'felt'];
+    ctx.fillStyle = fb.base;
+    ctx.fillRect(R.x, R.y, R.w, R.h);
+    // 绒布感：一层从桌面中心往外衰减的径向渐变（只影响画布可见的那块，其余被裁掉）
+    const cx = R.x + R.w / 2;
+    const cy = R.y + R.h / 2;
+    const rad = Math.max(R.w, R.h) * 0.62;
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+    grad.addColorStop(0, fb.mid);
+    grad.addColorStop(1, fb.edge);
+    ctx.fillStyle = grad;
+    ctx.fillRect(R.x, R.y, R.w, R.h);
+    // 暖金双线框（对应贴图的木框）：主边 4px + 内侧 1px 高光，画在页面边缘那一圈
+    const fx = R.x + 8;
+    const fy = R.y + 8;
+    const fw = R.w - 16;
+    const fh = R.h - 16;
+    if (fw > 0 && fh > 0) {
+      roundRect(ctx, fx, fy, fw, fh, 18);
+      ctx.strokeStyle = '#a8823c';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+      roundRect(ctx, fx + 6, fy + 6, fw - 12, fh - 12, 14);
+      ctx.strokeStyle = 'rgba(255,214,120,0.32)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
   }
 
   segPitch(seg) {
@@ -1074,28 +1148,30 @@ class Table {
   /**
    * 四方牌河块的落位（**只描述屏幕上的矩形与格距，阅读顺序见 `riverCell()`**）。
    *
-   *   · 上（对家）8 列 × 3 行：x 497..783，首行 166 贴盘，往上叠压（行距 27）
-   *   · 下（自己）8 列 × 3 行：x 497..783，首行 430 贴盘，往下叠压（行距 27）
-   *   · 左（上家）3 列 × 8 行：右缘贴盘左边，往下叠压（行距 21）
-   *   · 右（下家）3 列 × 8 行：左缘贴盘右边，往下叠压（行距 21）
-   * 四块都紧贴中心盘（480..800 × 222..418），容量统一 24，溢出压最后一格。
-   * 左右两家在**牌主视角**里其实是「8 列 × 3 行」，与上下两家同形（一行 8 张）。
+   *   · 上（对家）6 列 × 3 行：x 486（5×52+48=308，块心 640），底行 151、往上叠压（行距 38）
+   *   · 下（自己）6 列 × 3 行：x 486，首行 426 贴盘，往下叠压（行距 38）
+   *   · 左（上家）3 列 × 6 行：x 242，右缘贴盘左边，往下叠压（行距 30）
+   *   · 右（下家）3 列 × 6 行：x 841，左缘贴盘右边，往下叠压（行距 30）
+   * 四块都紧贴中心盘（480..800 × 226..422），容量统一 18，溢出压最后一格。
+   * 左右两家在**牌主视角**里是「6 列 × 3 行」（一行 6 张），屏幕上转成 3 个竖列 × 6 行。
+   *
+   * 2026-10-24（第八轮，容量 24→18、格子 38×50→48×63）：数字全部重解，原则仍是
+   * 「**贴盘那一侧钉死，往画布外圈长**」，只是这次把「每行 8 张」改成「每行 6 张」，
+   * 于是每格可以长大 26%（推导见文件头 `RIVER_W`）。
    */
   riverOrigin(seat) {
-    if (seat === 2) return { x: 497, y: 166, cols: 8, rows: 3, vertical: false, dx: 36, dy: -RIVER_LAP_FAR, cap: 24 };
-    if (seat === 0) return { x: 497, y: 430, cols: 8, rows: 3, vertical: false, dx: 36, dy: RIVER_LAP_FAR, cap: 24 };
+    if (seat === 2) return { x: 486, y: 151, cols: 6, rows: 3, vertical: false, dx: 52, dy: -RIVER_LAP_FAR, cap: 18 };
+    if (seat === 0) return { x: 486, y: 430, cols: 6, rows: 3, vertical: false, dx: 52, dy: RIVER_LAP_FAR, cap: 18 };
     // 左右两家：牌在桌上本来就是**横躺**的（字的「上」指向坐在那一侧的玩家），
-    // 所以格用横版 44×34、行距 21（叠压）、列距 46。
+    // 所以格用横版 63×48、行距 30（叠压）、列距 67。
     /*
-     * 2026-10-22（整块刚体缩放）：
-     *   · `y 241` —— 8 行叠压后只有 ~157px 高（k≈0.865），块心要落在中心盘（222..418）
-     *     的竖向中轴上（算下来 319 ≈ 盘心 320）；
-     *   · `x 303 / 841` —— x 是绕屏幕中心 (640) 缩的，若直接用「贴盘」的 330/814，
-     *     近边会被拉进盘里 ~18px。这里把原点外推，让**缩放后的近边**回到 466 / 814
-     *     （离盘边 14px，与原来一致）。
+     * `y` —— 6 行叠压后块高约 171（k≈0.866），块心要落在中心盘（226..422）的
+     *   竖向中轴上（算下来 320）；
+     * `x` —— x 是绕屏幕中心 (640) 缩的，若直接用「贴盘」的原点，近边会被拉进盘里。
+     *   这里把原点外推，让**缩放后的近边**落在 466 / 814（离盘边 14px）。
      */
-    if (seat === 3) return { x: 303, y: 241, cols: 3, rows: 8, vertical: false, dx: 46, dy: RIVER_LAP_SIDE, w: RIVER_H, h: RIVER_W, cap: 24 };
-    return { x: 841, y: 241, cols: 3, rows: 8, vertical: false, dx: 46, dy: RIVER_LAP_SIDE, w: RIVER_H, h: RIVER_W, cap: 24 };
+    if (seat === 3) return { x: 175, y: 234, cols: 4, rows: 6, vertical: false, dx: 67, dy: RIVER_LAP_SIDE, w: RIVER_H, h: RIVER_W, cap: 24 };
+    return { x: 841, y: 234, cols: 4, rows: 6, vertical: false, dx: 67, dy: RIVER_LAP_SIDE, w: RIVER_H, h: RIVER_W, cap: 24 };
   }
 
   /**
@@ -1306,10 +1382,15 @@ class Table {
      * （列中心仅 31%）偏上。按容量 14 张居中：y = (640 − 14×16)/2 = **208**；
      * 13 张时列中心 312（48.8%）、14 张 320（50%），张数变化只跳 8px。
      * 铭牌（左上 y14..68 / 右下 y572..626）、左右牌河（x303 起）与副露都不冲突。
+     *
+     * 2026-10-24（第五轮 38×52→44×60；**第八轮随牌河格 48×63 再对上**）：
+     * 对家 44×60→**48×66**、步距 46→52（13×52+48=724 居中 → x 278）；
+     * 左右两侧 19×18→**21×20**（14 张列高 280 → 居中 y=(640−280)/2=**180**），
+     * 右侧 x 1200→1203 让左右留白都是 56。这样「对手手牌」和牌河里的牌一样大。
      */
-    if (slot === 2) return { x: 360, y: 6, step: 40, horiz: true, w: 38, h: 52, max: 14 };
-    if (slot === 3) return { x: 56, y: 208, step: 16, horiz: false, w: 17, h: 36, max: 14 };
-    return { x: 1200, y: 208, step: 16, horiz: false, w: 17, h: 36, max: 14 };
+    if (slot === 2) return { x: 278, y: 6, step: 52, horiz: true, w: 48, h: 66, max: 14 };
+    if (slot === 3) return { x: 56, y: 180, step: 20, horiz: false, w: 21, h: 42, max: 14 };
+    return { x: 1203, y: 180, step: 20, horiz: false, w: 21, h: 42, max: 14 };
   }
 
   drawHandStacks(view) {
@@ -1489,8 +1570,10 @@ class Table {
        * 尺寸按**牌面源图的比例**（279×405 = 0.689）定，不再写死 48×62。
        * 写死 48 宽时比例 0.774，比源图宽 12%，叠上旧的 Lean 后宽到 35% —— 牌被拍扁。
        * 牌心固定在 188 / 246（下面「正精/副精」文字的 x），宽度变了也不会偏。
+       * 2026-10-24：62 → **68**（配合牌桌整体放大），牌底 254+68=322、「正精」标签在 330，
+       * 仍留 8px 间距；两块牌心的间距 58 不变，46 宽的两张之间还有 12px。
        */
-      const jh = 62;
+      const jh = 68;
       const art0 = tileimg.art(pi);
       const ratio0 = art0 && art0.width && art0.height ? art0.width / art0.height : 279 / 405;
       const jw = Math.round(jh * ratio0);
@@ -1549,6 +1632,126 @@ class Table {
       }
       if (mine) this.rollBtn = { x: bx, y: by, w: bw, h: bh };
     }
+
+    /*
+     * 四向指示键放在**最后**画（2026-10-24）：它压在盘边线上，必须先让盘内内容
+     * （大数字 / 立精 / 掷骰按钮）各就各位，否则会被「等待掷骰」那块铺满的按钮盖住。
+     */
+    this.drawDirectors(view);
+  }
+
+  /**
+   * 中心盘四向指示键：**当前该谁行动（view.turn）就点亮哪个方向**。
+   *
+   * 位置：贴盘的边线、向外探 4px（盘外只有 12px 空缝，探 4 不会碰到牌河），
+   * 横条沿边中点居中、竖条以盘心 320 居中。盘内因此被占掉四周各 22px，
+   * 而盘内现有内容的实际占位是 y 254..394、x 512..749 —— 完全不冲突。
+   *
+   * 只画**激活的那一条**（不画另外三条暗的）：素材原本是给 130×130 正方托盘用的四条边，
+   * 我们盘是 320×196 的矩形，四条同时铺会把盘挤满；只点亮当前方向最干净也最醒目。
+   *
+   * 贴图没就绪（清单漏配 / 首次进房还没下载完）时走 `drawDirectorFallback` 的矢量三角，
+   * 保证功能本身不依赖贴图。
+   */
+  drawDirectors(view) {
+    if (view.phase !== 'playing') return;
+    const seat = view.turn;
+    if (typeof seat !== 'number' || seat < 0) return;
+    const slot = this.disp(view, seat);
+    const ctx = this.ctx;
+    const px = 480;
+    const py = 226;
+    const pw = 320;
+    const ph = 196;
+    let x;
+    let y;
+    let w;
+    let h;
+    if (slot === 0) {
+      x = 640 - RT_LONG / 2; y = py + ph - RT_THICK + RT_OUT; w = RT_LONG; h = RT_THICK;
+    } else if (slot === 2) {
+      x = 640 - RT_LONG / 2; y = py - RT_OUT; w = RT_LONG; h = RT_THICK;
+    } else if (slot === 3) {
+      x = px - RT_OUT; y = 320 - RT_LONG / 2; w = RT_THICK; h = RT_LONG;
+    } else {
+      x = px + pw - RT_THICK + RT_OUT; y = 320 - RT_LONG / 2; w = RT_THICK; h = RT_LONG;
+    }
+    const img = uiart.art(`room_time_${slot}`);
+    const src = ROOM_TIME_SRC[slot];
+    /*
+     * 呼吸：alpha 0.78~1.0，周期约 1.4s。
+     * 局中 `render()` 末尾会 `scheduleFrame()` 每帧重绘，所以动画自己就跑起来了，
+     * 不需要额外注册定时器；结算/摊牌相位不重绘，正好那时也不画指示器。
+     */
+    const alpha = 0.78 + 0.22 * (0.5 + 0.5 * Math.sin(Date.now() / 220));
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    if (img && src) {
+      const iw = img.width || 260;
+      const ih = img.height || 260;
+      ctx.drawImage(img, src[0] * iw, src[1] * ih, src[2] * iw, src[3] * ih, x, y, w, h);
+    } else {
+      this.drawDirectorFallback(ctx, slot, x, y, w, h);
+    }
+    ctx.restore();
+  }
+
+  /** 指示键的矢量兜底（贴图缺失时）：同形状的发光梯形 + 三角箭头，颜色取自素材的绿+黄 */
+  drawDirectorFallback(ctx, slot, x, y, w, h) {
+    const horiz = slot === 0 || slot === 2;
+    // T = 条的厚度（横条取高、竖条取宽），箭头尺寸按它推，与条的长短无关
+    const T = horiz ? h : w;
+    // 梯形：远端（朝盘外）厚、近端（朝盘心）薄，与素材一致
+    const narrow = T * 0.72;
+    ctx.save();
+    ctx.beginPath();
+    if (slot === 0) {
+      // 下：外沿（下边）宽、内沿窄
+      ctx.moveTo(x + (w - narrow) / 2, y);
+      ctx.lineTo(x + (w + narrow) / 2, y);
+      ctx.lineTo(x + w, y + h);
+      ctx.lineTo(x, y + h);
+    } else if (slot === 2) {
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + w, y);
+      ctx.lineTo(x + (w + narrow) / 2, y + h);
+      ctx.lineTo(x + (w - narrow) / 2, y + h);
+    } else if (slot === 3) {
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + w, y + (h - narrow) / 2);
+      ctx.lineTo(x + w, y + (h + narrow) / 2);
+      ctx.lineTo(x, y + h);
+    } else {
+      ctx.moveTo(x + w, y);
+      ctx.lineTo(x + w, y + h);
+      ctx.lineTo(x, y + (h + narrow) / 2);
+      ctx.lineTo(x, y + (h - narrow) / 2);
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(58,150,72,0.92)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(180,240,170,0.75)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // 三角箭头：顶点朝外（下/右/上/左）
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const ax = T * 0.5;
+    const ay = T * 0.42;
+    ctx.beginPath();
+    if (slot === 0) {
+      ctx.moveTo(cx, cy + ay); ctx.lineTo(cx - ax, cy - ay * 0.4); ctx.lineTo(cx + ax, cy - ay * 0.4);
+    } else if (slot === 2) {
+      ctx.moveTo(cx, cy - ay); ctx.lineTo(cx - ax, cy + ay * 0.4); ctx.lineTo(cx + ax, cy + ay * 0.4);
+    } else if (slot === 3) {
+      ctx.moveTo(cx - ay, cy); ctx.lineTo(cx + ay * 0.4, cy - ax); ctx.lineTo(cx + ay * 0.4, cy + ax);
+    } else {
+      ctx.moveTo(cx + ay, cy); ctx.lineTo(cx - ay * 0.4, cy - ax); ctx.lineTo(cx - ay * 0.4, cy + ax);
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#f2d76b';
+    ctx.fill();
+    ctx.restore();
   }
 
   revealed(view) {
@@ -1650,15 +1853,23 @@ class Table {
 
   /**
    * 摊牌各家明牌落位（结算态，2026-10-23 重排）：
-   *   自己/对家：顶/底边**一排** 40×50，按实际张数**居中**（14 张 = 612 宽）；
-   *   上家/下家：左右边**一列** 44×34 横向格，整列竖向居中（与上下两家的单排一致）；
+   *   自己/对家：顶/底边**一排** 48×60，按实际张数**居中**（14 张 = 728 宽）；
+   *   上家/下家：左右边**一列** 63×48 横向格，整列竖向居中（与上下两家的单排一致）；
    *     列内行距用左右牌河同款 `RIVER_LAP_SIDE·k` 叠压（用户要求「牌间隙像牌河」）。
    * 侧边整列走统一投影比 `OVER_SIDE.k`，不再按 y 逐张漂移。
+   *
+   * 2026-10-24 第八轮：自己的摊牌行改成**跟着自己牌河块的实际底边走**
+   * （`max(552, R.b + 8)`）—— 牌河放大后满 18 张时底边到 556，写死 552 会压在一起。
+   * 取 max 是因为牌少时块只有一两行，太靠下会离牌河太远。
    */
   revealOrigin(slot, n) {
     const cnt = Math.max(1, n || 0);
-    if (slot === 2) return { x: 640 - (cnt * 44 - 4) / 2, y: 0, vertical: false };
-    if (slot === 0) return { x: 640 - (cnt * 44 - 4) / 2, y: 550, vertical: false };
+    if (slot === 2) return { x: 640 - (cnt * REVEAL_DX - 4) / 2, y: 0, vertical: false };
+    if (slot === 0) {
+      const R = this.riverBlockRect(0);
+      const y = Math.max(552, Math.round(R.b + 8));
+      return { x: 640 - (cnt * REVEAL_DX - 4) / 2, y: Math.min(y, 640 - REVEAL_H - 2), vertical: false };
+    }
     const k = OVER_SIDE.k;
     const sw = RIVER_H * k;
     const sh = RIVER_W * k;
@@ -1706,10 +1917,10 @@ class Table {
     };
     const o = this.revealOrigin(slot, tiles.length);
     if (!o.vertical) {
-      // 横边：单排 40×50，行距 44；按张数居中（x 在 revealOrigin 里算）
-      const HB_W = 40;
-      const HB_H = 50;
-      const HB_DX = 44;
+      // 横边：单排 REVEAL_W×REVEAL_H，步距 REVEAL_DX；按张数居中（x 在 revealOrigin 里算）
+      const HB_W = REVEAL_W;
+      const HB_H = REVEAL_H;
+      const HB_DX = REVEAL_DX;
       tiles.forEach((t, i) => {
         const x = o.x + i * HB_DX;
         this.drawTile(t, x, o.y, HB_W, HB_H, view, false, tilt, rot, slot);
@@ -1746,15 +1957,17 @@ class Table {
 
   /**
    * 副露的牌张尺寸 / 排列方向 / 行内步距（按**屏幕槽位**）。
-   *   slot 0/2 → 竖版 40×52，一组副露沿 x 横排（pitch = 牌宽，紧贴）
-   *   slot 1/3 → 横向 56×44，一组副露沿 y 竖排（pitch 26，见 MELD_SIDE_*）
+   *   slot 0/2 → 竖版 38×50，一组副露沿 x 横排（pitch = 牌宽 + 2）
+   *   slot 1/3 → 横向 50×38，一组副露沿 y 竖排（pitch 24 = 牌高 × 0.62）
+   * 尺寸全部由 `RIVER_W/RIVER_H` 派生 —— 2026-10-24 牌河放大后自动跟着变，
+   * 这正是「副露与牌河必须同格」这条约束带来的好处，不要再单独写死数字。
    */
   meldMetrics(slot) {
     /*
      * 2026-10-22（第十轮，用户「上家和下家的牌还是竖直方向没对齐，左右存在偏移」）：
-     * **副露牌的尺寸必须和牌河牌一模一样**——侧边 44×34、上下 34×44。
+     * **副露牌的尺寸必须和牌河牌一模一样**——侧边 50×38、上下 38×50。
      *
-     * 上一版是「按图集比例反推」（侧边 h=44 → w=54），比牌河牌（44×34）大一圈；
+     * 上一版是「按图集比例反推」（侧边 h=44 → w=54），比牌河牌大一圈；
      * 两者在同一家面前**并排成两列**，一列宽 54、一列宽 44，屏幕上就是「粗细不一、
      * 上下对不齐」，怎么调锚点都救不回来。图集比例（59/48=1.229）与牌河的 1.294
      * 只差 5%，统一到牌河的格子肉眼看不出来，但并排立刻齐了。
@@ -1763,8 +1976,8 @@ class Table {
      * pitch = 牌高 × 0.62。上下两家是横排，横着叠会挡牌面 → 仍是 2px 紧排。
      */
     const vertical = slot === 1 || slot === 3;
-    const w = vertical ? RIVER_H : RIVER_W; // 44 / 34
-    const h = vertical ? RIVER_W : RIVER_H; // 34 / 44
+    const w = vertical ? RIVER_H : RIVER_W; // 50 / 38
+    const h = vertical ? RIVER_W : RIVER_H; // 38 / 50
     const pitch = vertical ? Math.round(h * MELD_SIDE_LAP) : w + 2;
     return { w, h, pitch, vertical };
   }
@@ -2287,6 +2500,38 @@ class Table {
    * 贴图未就绪（清单失败 / preload 未完成）时**回退原来的圆角块 + 文字**，行为与旧版一致。
    */
   /**
+   * 把「新动作」落到中心动画上（纯逻辑，不绘制）。
+   * 逐个应用、**后者覆盖前者**（= 立即打断）；打断时继承旧动画当前的 scale/alpha，
+   * 避免画面在切换瞬间跳变。抽成方法是为了能单独测「动作 kind → 动画 kind」的对应关系
+   * （2026-10-23 用户报「吃却显示了碰」，见 .recover-tmp/test_action_fx.cjs）。
+   */
+  applyActionFx(fresh) {
+    for (const a of fresh || []) {
+      if (!a || ACTION_FX_KINDS.indexOf(a.kind) < 0) continue;
+      const now = Date.now();
+      const prev = this.actionFx;
+      const pose = prev
+        ? this.fxPose(prev, Math.max(0, Math.min(1, (now - prev.t0) / ACTION_FX_DUR)))
+        : null;
+      this.actionFx = {
+        kind: a.kind,
+        seat: a.seat,
+        t0: now,
+        seq: Number(a.seq) || 0,
+        s0: pose ? pose.scale : 1.55, // 接管起点：无旧动画 = 完整缩放入场
+        a0: pose ? pose.alpha : 0,
+      };
+      // 诊断（2026-10-23 用户报「吃却显示碰」）：每次真正起一段中心动画打一条，
+      // 与页面侧 onControl 的 `[ctl]` 日志一对，就能确认「发出去的动作」和「播的动画」是否同一件。
+      try {
+        console.info(`[fx] ${a.kind} seat=${a.seat} seq=${a.seq}`);
+      } catch (e) {
+        /* 控制台不可用时忽略 */
+      }
+    }
+  }
+
+  /**
    * 收集「上次处理之后」的新动作（按 seq 升序）。
    * · 服务端 `view.log` 是完整动作日志（seq 递增，最多 500 条）→ 倒序扫到已处理位置即停，
    *   这样**多个动作同帧到达时也能按序处理**（只发 lastAction 会漏掉中间的）；
@@ -2348,6 +2593,18 @@ class Table {
     return { scale: 1 - 0.12 * k, alpha: 1 - k };
   }
 
+  /**
+   * 中心动画的归属小注（2026-10-23）：优先昵称，没昵称退回相对方位「我 / 下家 / 对家 / 上家」。
+   * 不拼成「下家·下家西」那种双重前缀 —— 和「暗杠」拼起来会变成「暗杠 · 下家·下家西」。
+   */
+  fxSeatLabel(seat) {
+    const v = this.view;
+    if (!v || seat === undefined || seat === null || seat < 0) return '';
+    const rel = ['我', '下家', '对家', '上家'][(((seat - (v.mySeat || 0)) % 4) + 4) % 4];
+    const name = (v.names && v.names[seat]) || '';
+    return name && name !== rel ? name : rel;
+  }
+
   drawActionFx() {
     const fx = this.actionFx;
     if (!fx) return;
@@ -2372,17 +2629,23 @@ class Table {
       const h = 132;
       const w = h * (art.width / art.height);
       ctx.drawImage(art, -w / 2, -h / 2, w, h);
-      // 暗杠/补杠：与普通「杠」同图，补小注区分
+      /*
+       * 图下小注（2026-10-23）：暗杠/补杠与普通「杠」同图要区分；另外**统一补上是谁做的**
+       * ——用户报「明明是吃，中心却显示碰」，实际多半是下家的碰紧接着把动画打断了，
+       * 但画面只孤零零一个「碰」，没有任何归属信息，看着就像自己那手吃变成了碰。
+       * 加一行「下家·碰主昵称」式的归属后，一秒就能确认是不是自己的操作。
+       */
       const cap = fx.kind === 'angang' ? '暗杠' : fx.kind === 'bugang' ? '补杠' : '';
-      if (cap) {
-        ctx.font = font(26, true);
+      const note = [cap, this.fxSeatLabel(fx.seat)].filter(Boolean).join(' · ');
+      if (note) {
+        ctx.font = font(24, true);
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.lineWidth = 5;
         ctx.strokeStyle = 'rgba(0,0,0,0.65)';
-        ctx.strokeText(cap, 0, 78);
+        ctx.strokeText(note, 0, 80);
         ctx.fillStyle = '#f6e3a1';
-        ctx.fillText(cap, 0, 78);
+        ctx.fillText(note, 0, 80);
       }
     } else {
       // 回退：圆角块 + 文字（贴图未就绪时保持旧行为）

@@ -564,6 +564,22 @@
   color: #f6e3a1;
 }
 
+/* 听牌提示（2026-10-23）：与倒计时同款小胶囊，挂在状态行右侧。
+   内容由服务端 view.waits 决定（能自摸胡的进张），前端不判规则。
+   高度必须 ≤ 状态行高度（常态 32rpx / 紧凑档 15px），否则会被 overflow:hidden 裁掉。 */
+.waits-chip {
+  margin-left: 10rpx;
+  padding: 0 12rpx;
+  border-radius: 999rpx;
+  background: rgba(230, 193, 75, 0.18);
+  border: 1px solid rgba(230, 193, 75, 0.7);
+  color: #f6e3a1;
+  font-size: 22rpx;
+  line-height: 30rpx;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* 响应倒计时：并进状态行（原先绝对定位在画布顶部，会被原生 canvas 盖住） */
 .countdown {
   margin-left: 10rpx;
@@ -664,6 +680,50 @@
   width: 320rpx;
   height: 178rpx;
   margin: 0 auto 6rpx;
+}
+
+/* ---------- 报杠行（2026-10-23） ----------
+   位置：手牌条正上方（WXML 里排在 .tray-stack 之前）。
+   **整行只在「本玩法支持报杠 + 确实有可报牌面」时渲染**（用户要求），其余情况不占高度；
+   显隐改变了操作区总高，所以 renderGame 把它并进 chromeKey，翻转那一帧才 fitCanvas 重量
+   —— 否则画布按旧行高定尺会溢出 .canvas-wrap（flex-end 对齐会往上顶、压到顶栏）。
+   可见时行高固定 56rpx：按钮数量变化（1~4 个）不改变行高，同一回合内不会来回抖。
+   多张可报时横向排开（真实上限 4 个：13 张手牌最多凑 4 组三张），一行放得下；
+   overflow:hidden 兜住极端情况，宁可裁一点也不要换行。
+   胶囊用**纯文字**（「报杠 四萬」）：24px 高的小钮里放书法体「杠」位图会糊成一团。 */
+.declare-row {
+  width: 100%;
+  height: 56rpx;
+  margin-bottom: 4rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10rpx;
+  overflow: hidden;
+}
+
+.declare-btn {
+  height: 48rpx;
+  padding: 0 16rpx;
+  font-size: 22rpx;
+  line-height: 1;
+  border-radius: 999rpx;
+  flex-shrink: 0;
+  /* 同样要压过 app.wxss 的 button{display:inline-block!important}，
+     否则内容按行内基线排、上下留白不均 */
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  background: rgba(230, 193, 75, 0.18);
+  border: 1px solid rgba(230, 193, 75, 0.85);
+  color: #f6e3a1;
+  white-space: nowrap;
+}
+
+/* 无可报牌面时整行不渲染（用户要求），因此这里不再需要灰底占位钮样式 */
+
+.declare-btn[disabled] {
+  opacity: 0.45;
 }
 
 /* 操作区容器：手牌与遮罩共用同一块区域，遮罩绝对定位盖在手牌上。
@@ -1243,6 +1303,13 @@
     line-height: 14px;
   }
 
+  .waits-chip {
+    margin-left: 5px;
+    padding: 0 6px;
+    font-size: 11px;
+    line-height: 14px;
+  }
+
   .controls button {
     height: 30px;
     line-height: 28px;
@@ -1296,6 +1363,19 @@
 
   .tbl-cell {
     padding: 3px 4px;
+  }
+
+  /* 报杠行紧凑档：28px 行高 / 24px 胶囊（行高固定，只有整行显隐会变，由 chromeKey 触发重量） */
+  .declare-row {
+    height: 28px;
+    margin-bottom: 3px;
+    gap: 5px;
+  }
+
+  .declare-btn {
+    height: 24px;
+    padding: 0 10px;
+    font-size: 11px;
   }
 
   .emote-card {

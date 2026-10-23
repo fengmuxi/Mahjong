@@ -168,6 +168,20 @@ function handle(msg) {
       call('onError', msg.reason);
       return;
     }
+    case 'kicked': {
+      // 被房主移出房间（2026-10-23）：**必须清掉本地房间态**，
+      // 否则下一轮 connectAndSend / auto-resume 会拿旧 token 把人又拽回牌桌（等于没踢掉）。
+      autoResume = false;
+      store.clearRoom();
+      g.resumeFail = null;
+      g.lastState = null;
+      g.lastGameView = null;
+      net.setInRoom(false);
+      net.closeSocket();
+      wx.showToast({ title: msg.reason || '你已被移出房间', icon: 'none', duration: 2000 });
+      if (!current || current.name !== 'home') wx.reLaunch({ url: '/pages/home/home' });
+      return;
+    }
     case 'state': {
       g.lastState = msg;
       g.mySeat = msg.you;
@@ -265,18 +279,29 @@ module.exports = {
     navigate('game', '/pages/game/game');
     const token = store.get(store.KEYS.token, '');
     if (token) net.connectAndSend({ t: 'resume', token });
+    // token 丢了但还记着房间码：用 (pid + 房间码) 找回座位（2026-10-23）
+    else {
+      const code = String(store.get(store.KEYS.room, '') || '');
+      if (code) net.connectAndSend({ t: 'join', code, name: store.get(store.KEYS.name, ''), pid: store.ensurePid() });
+    }
   },
   resetChat() {
     app().chatHistory = [];
     app().chatUnread = 0;
   },
-  /** 启动即尝试凭本地 token 回桌（等价 web 端刷新自动重连） */
+  /**
+   * 启动即尝试回桌（等价 web 端刷新自动重连）。
+   * 优先用 token；**token 丢了但本地还记着房间码 → 用 (pid + 房间码) 找回座位**
+   * （2026-10-23：换设备 / 存储被清 / 令牌被别的房间覆盖时，这条是唯一能回原座位的路）。
+   */
   tryResume() {
     const token = store.get(store.KEYS.token, '');
-    if (!token) return false;
+    const code = String(store.get(store.KEYS.room, '') || '');
+    if (!token && !code) return false;
     autoResume = true;
     net.setInRoom(true);
-    net.connectAndSend({ t: 'resume', token });
+    if (token) net.connectAndSend({ t: 'resume', token });
+    else net.connectAndSend({ t: 'join', code, name: store.get(store.KEYS.name, ''), pid: store.ensurePid() });
     return true;
   },
   isAutoResume() {

@@ -60,6 +60,32 @@ const scaleOf = (k) => SCALE_OF[k] || 2;
  */
 const OPAQUE_KEYS = new Set(['inhand_l', 'inhand_r']);
 
+/*
+ * ⚠️⚠️ **本脚本当前处于停用状态**（2026-10-24）。
+ *
+ * 源目录 `packages/client/src/assets/ui` 随 `packages/client` 在提交 104bfdc
+ * 「Remove client-side assets and configuration files」被整体删除。而本脚本原本是
+ * **先 `fs.rmSync(OUT)` 再检查分组目录**，源不全就 `process.exit(1)` —— 也就是说，
+ * 现在跑一次它会先把 `packages/server/public/ui` 整个清空、然后才报「源目录缺分组」退出。
+ * 线上 26 张 UI 贴图（牌背/操作钮/结算字/庄标/大数字/桌面）会**一次性全没**。
+ *
+ * 因此在有人把 assets 源图恢复之前，本脚本必须先自杀：下面这道守卫放在 rmSync **之前**，
+ * 源目录不存在就直接退出，绝不碰产物。
+ *
+ * · 新增 UI 贴图：改走 `node scripts/gen_ui_extra.mjs`
+ *   （源放 `packages/miniapp/assets/ui/<group>/`，只增不删）。
+ * · 想让本脚本重新可用：把 30 张源 PNG 从 git 历史恢复到 `packages/client/src/assets/ui`
+ *   对应分组目录，再删掉这道守卫。
+ */
+if (!fs.existsSync(SRC)) {
+  console.error(
+    `[gen:ui-cdn] 源目录已不存在：${SRC}\n` +
+      `[gen:ui-cdn] 本脚本会先清空产物目录，源不全时产物会全丢 —— 拒绝执行。\n` +
+      `[gen:ui-cdn] 新增贴图请改用：node scripts/gen_ui_extra.mjs`,
+  );
+  process.exit(1);
+}
+
 // 清空旧产物（平铺时代的残留必须清掉，否则 /api/ui 会同时列出两级路径）
 fs.rmSync(OUT, { recursive: true, force: true });
 

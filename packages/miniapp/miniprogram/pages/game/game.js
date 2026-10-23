@@ -61,6 +61,7 @@ const SOUND_BY_ACTION = {
   gang: 'gang',
   angang: 'gang',
   bugang: 'gang',
+  declare: 'gang', // 报杠（展示三张）复用杠音效
   hu: 'hu',
 };
 const CHAT_MAX = 200;
@@ -170,6 +171,15 @@ Page({
     controls: [],
     controlsErrShown: false,
     controlsErrText: '',
+    /**
+     * 报杠常驻行（2026-10-23 用户要求）：手牌条正上方一排「报杠」按钮。
+     * 与吃碰杠胡遮罩**分离** —— 报杠不是响应窗口里的选择，而是「手里三张就能报」，
+     * 所以常驻在出牌器顶部，可能同时有多张可报（每个牌面一个钮）。
+     * `declareEnabled` 由服务端按玩法下发（南昌=false 整行不渲染）。
+     */
+    declares: [],
+    declareEnabled: false,
+    declareBusy: false,
     countdownShown: false,
     countdownText: '',
     // 手牌操作条
@@ -387,6 +397,8 @@ Page({
     if (this.ceremonyExpiryTimer) clearTimeout(this.ceremonyExpiryTimer);
     if (this.errTimer) clearTimeout(this.errTimer);
     this.errTimer = null;
+    if (this._declareTimer) clearTimeout(this._declareTimer);
+    this._declareTimer = null;
   },
 
   onResize() {
@@ -477,16 +489,28 @@ Page({
         // 降级（清单未就绪 / 线上服务端没带 public/ui）：桌面底色退回矢量桌的外层藏青，
         // 免得画布里的藏青桌周围是一圈绿绒（两套桌面拼在一起更难看）。
         this.setData({ feltUrl: '', feltNavy: true });
+        // canvas 的矢量兜底桌要跟 DOM 层同一个色（.felt.na = #0d1626），否则画布边界露色带
+        if (this.table) this.table.feltNavy = true;
         return;
       }
       const feltUrl = uiart.urlOf('table');
       if (feltUrl && feltUrl !== this.data.feltUrl) this.setData({ feltUrl, feltNavy: false });
+      /*
+       * 2026-10-24：清单正常但贴图还在路上时，DOM `.felt` 露出的是它自己的兜底色
+       * `#14614a`（桌面贴图绒布的平均色），而 canvas 此时 `uiart.art('table')` 还是 null、
+       * 走矢量兜底 —— 两边不同色会在画布边界切出一条色带。这里把「DOM 现在铺的是哪种兜底色」
+       * 告诉 table，两层的兜底才算真同源（见 table.js 的 FELT_FALLBACK）。
+       */
+      if (this.table) this.table.feltNavy = !feltUrl;
       uiart.preload(
         canvas,
         // 画布消费的位图：牌背（back / 暗杠 back_op / 左右家手牌 inhand_l·inhand_r）/庄标/大数字
         // + 操作动画字样（chi/peng/gang/hu —— 中心区动画用贴图，见 table.js drawActionFx）
         // + 桌面背景（faceA..faceD 平放牌图集 2026-10-23 移往牌面大类，由 tileimg.preload 预解码）
-        ['back', 'back_op', 'inhand_l', 'inhand_r', 'banker', 'table', 'd0', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8', 'd9', 'chi', 'peng', 'gang', 'hu'],
+        // + 中心盘四向指示键 room_time_0..3（2026-10-24；**canvas 侧要用的位图必须进白名单**，
+        //   否则 uiart.art() 拿不到 → drawDirectors 静默走矢量三角）
+        ['back', 'back_op', 'inhand_l', 'inhand_r', 'banker', 'table', 'd0', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8', 'd9', 'chi', 'peng', 'gang', 'hu',
+          'room_time_0', 'room_time_1', 'room_time_2', 'room_time_3'],
         () => {
           if (this.view) this.table.render(this.view);
           if (this.data.controls.length && this.view) this.renderControls(this.view);
@@ -843,9 +867,27 @@ Page({
     // 没放大」）。只在档位真正翻转的那一帧重量，同档位内的 state 广播不量
     // （SelectorQuery 有开销）。仪式中手牌虽也隐藏，但 `.tray-stack` 的 min-height
     // 仍在占位 → 高度不变 → 不需要重量，故档位只区分结算与否。
-    const chromeKey = over ? 'o' : '-';
+    // 会改变「操作区高度」的东西都进 key：结算相位翻转、报杠行出现/消失。
+    // 行高变了就要重量画布，否则画布会溢出 .canvas-wrap（它是 flex-end 对齐，往上顶）。
+    // 报杠行**只在「本玩法支持报杠 + 手里确实有可报的三张」时出现**（2026-10-23 用户要求），
+    // 其余情况整行不渲染、高度全部还给画布。
+    // 老服务端不下发 declareEnabled → 按开启处理（报杠选项已从吃碰杠胡遮罩移除，
+    // 若这里判成关闭，旧服务端上「报杠」就彻底没有入口了）。
+    const declareOpts = Array.isArray(v.declareOptions) ? v.declareOptions : [];
+    const declareOn =
+      !over && declareOpts.length > 0 && (v.declareEnabled === undefined ? true : !!v.declareEnabled);
+    const chromeKey = `${over ? 'o' : '-'}${declareOn ? '+d' : ''}`;
     const chromeChanged = this.chromeKey !== chromeKey;
     this.chromeKey = chromeKey;
+    // 听牌提示文案：服务端算好 view.waits（能自摸胡的进张），前端只负责拼字
+    const waits = Array.isArray(v.waits) ? v.waits : [];
+    const waitsText = over || waits.length === 0
+      ? ''
+      : waits.length >= 34
+        ? '听任意一张'
+        : waits.length > 5
+          ? `听 ${waits.length} 张`
+          : `听 ${waits.map((t) => tileName(t)).join('、')}`;
     const patch = {
       code: v.code,
       variantLabel: v.variant ? variantName(v.variant) : '',
@@ -856,6 +898,17 @@ Page({
       dissolveGameShown: v.hostSeat === v.mySeat,
       controlsErrShown: false,
       overPhase: over,
+      /**
+       * 听牌提示（2026-10-23）：服务端算好 `view.waits`（能自摸胡的进张），前端只拼文案。
+       * 34 张全听显示「听任意一张」；超过 5 张只报张数，免得把小胶囊撑爆。
+       */
+      waitsText,
+      /**
+       * 报杠行是否渲染（2026-10-23）：本玩法支持报杠 **且** 当前确实有可报的牌面时才为真。
+       * 和 overPhase 同一批 setData —— 它占 28px 高度，必须与 chromeKey 同帧生效，
+       * fitCanvas 才能量到正确行高。
+       */
+      declareEnabled: declareOn,
     };
     // 新一局开始（或换玩法重开）时清掉「本局结算 ▲」——它只属于已结束的那一局
     if (!over && this.data.settleRestoreShown) patch.settleRestoreShown = false;
@@ -913,6 +966,7 @@ Page({
   },
 
   renderControls(v) {
+    this.syncDeclares(v); // 报杠常驻行：与下面的吃碰杠胡 controls 互不影响
     const controls = [];
     let status = '';
     if (v.phase === 'over') {
@@ -1004,10 +1058,8 @@ Page({
         art: uiart.urlOf('gang'),
       });
     }
-    for (const dt of v.declareOptions || []) {
-      const cap = `展示 ${tileName(dt)}`;
-      controls.push({ text: cap, cap, act: { t: 'declareKong', tile: dt }, art: uiart.urlOf('gang') });
-    }
+    // 报杠（展示三张）不在这里：2026-10-23 起改为**手牌条上方的常驻行**（见 syncDeclares），
+    // 因为它不依赖响应窗口 —— 自己回合手握三张随时可报，且可能同时有多张。
     if (v.canZimo) {
       const cap = v.zimoLabel ? `自摸·${v.zimoLabel}` : '自摸';
       controls.push({ text: cap, cap, act: { t: 'zimo' }, art: uiart.urlOf('hu') });
@@ -1060,10 +1112,66 @@ Page({
     }
   },
 
+  /**
+   * 报杠常驻行（2026-10-23）。
+   *
+   * 为什么独立于 `controls`：报杠不是「响应窗口里的选择」，而是自己回合手握三张就能做的事，
+   * 且**可能同时有多张**可报（每个牌面一枚钮）—— 混进吃碰杠胡遮罩会挤成一排、还会被
+   * 遮罩盖住。这里单独渲染成手牌条上方的一行，行高固定（空着也占位），避免画布被反复顶动。
+   *
+   * 只在 `declareEnabled`（玩法开启报杠，服务端下发）时渲染整行；南昌等玩法零成本。
+   * 选项随 `view.declareOptions` 变（自己回合 + 恰好三张 + 未被挂起），其余时候整行显示
+   * 一个 disabled 的「报杠」占位钮 —— 常驻但不误导。
+   */
+  syncDeclares(v) {
+    // 整行显隐由 renderGame 写 data.declareEnabled（支持报杠的玩法 + 确实有可报牌面），
+    // 这里只负责「这一行里有哪些钮」。南昌等玩法的 declareOptions 恒为空 → 列表空 → 行不渲染。
+    const on = !!v && v.phase === 'playing';
+    const list = on ? (v.declareOptions || []).map((t) => ({ tile: t, name: tileName(t) })) : [];
+    const prev = this.data.declares || [];
+    const same =
+      list.length === prev.length && list.every((x, i) => prev[i] && prev[i].tile === x.tile);
+    if (!same) {
+      // 按钮集合变了（报到新牌面 / 轮到自己）：顺手解开上一次点击的锁
+      this.setData({ declares: list, declareBusy: false });
+      return;
+    }
+    // 集合没变但来了新 view → 也是「服务端已回应」的信号，解掉连点锁
+    if (this.data.declareBusy && this._declareView !== v) this.setData({ declareBusy: false });
+  },
+
+  /** 点「报杠 X」：一次点击只发一条；成功后按钮会随新 view 消失（该牌面已挂起） */
+  onDeclareTap(e) {
+    if (this.data.declareBusy) return;
+    const raw = e.currentTarget.dataset.tile;
+    const tile = Number(raw);
+    if (!Number.isInteger(tile) || tile < 0) return;
+    const v = this.view;
+    // 与服务端同一口径（自己回合、无响应窗口）；不满足就静默不发，避免刷错误日志
+    if (!v || v.phase !== 'playing' || v.turn !== v.mySeat || v.claimWindow) return;
+    sound.unlock(); // 手势内解锁（iOS）
+    sound.play('gang'); // 自己报杠即时反馈；他人由 playActionSounds 按日志播
+    this._declareView = v;
+    this.setData({ declareBusy: true });
+    room.send({ t: 'declareKong', tile });
+    // 兜底解锁：服务端拒绝时只会回 error、不一定有新 view，按钮不能一直灰着
+    if (this._declareTimer) clearTimeout(this._declareTimer);
+    this._declareTimer = setTimeout(() => {
+      this._declareTimer = null;
+      if (this.data.declareBusy) this.setData({ declareBusy: false });
+    }, 2500);
+  },
+
   onControl(e) {
     const idx = Number(e.currentTarget.dataset.idx);
     const item = this.data.controls[idx];
     if (!item || item.disabled) return;
+    // 诊断（2026-10-23）：与 table.js 的 `[fx]` 日志一对，排查「点了吃却播碰」这类不对应
+    try {
+      console.info(`[ctl] ${item.act.t}${item.act.kind ? ':' + item.act.kind : ''} idx=${idx}/${this.data.controls.length}`);
+    } catch (err) {
+      /* 控制台不可用时忽略 */
+    }
     sound.unlock(); // 用户手势里补一次解锁（清单晚到时下次操作仍有机会）
     room.send(item.act);
     this.lockControls();

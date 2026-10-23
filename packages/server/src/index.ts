@@ -41,7 +41,7 @@ const UI_DIR = path.resolve(__dirname, '../public/ui');
  *   hand    手牌相关：back 牌背 · back_op 暗杠扣牌 · inhand_l/inhand_r 左右家手牌侧影
  *   operate 操作钮：chi/peng/gang/hu/guo（中心动画字样同图）
  *   settle  结算艺术字：win/lost/draw
- *   hud     桌面 HUD：table 桌面 · banker 庄标 · d0..d9 大数字
+ *   hud     桌面 HUD：table 桌面 · banker 庄标 · d0..d9 大数字 · room_time_0..3 四向指示键
  *   bg      web 端背景平铺纹理：bg-cloud/bg-lattice
  * （faceA..faceD 平放牌图集 2026-10-23 移往牌面大类：/api/tiles 的 faces 子清单）
  * 清单值 = `<group>/<key>.webp` 相对路径（客户端 urlOf 拼 `${base}/ui/${值}`，不感知分组）。
@@ -79,6 +79,8 @@ const TILES_VER = process.env.MAHJONG_TILES_VER || 'v4';
  * 老客户端于是长期吃缓存里那份 19 项清单 —— 整屏桌面没图、平放牌退回立牌。
  * 客户端已改成「网络清单无条件覆盖缓存」，但版本号仍是**缓存失效开关**：
  * 换过美术就抬一位，别省这一步。
+ * v13 → v14（2026-10-24）：新增 `room_time_0..3` 中心盘四向指示键（hud 组，
+ * 26 键 → 30 键）。用于「哪家出牌就点亮哪个方向的指示器」。
  * v12 → v13（2026-10-23）：faceA..faceD 平放牌图集移往牌面大类（/api/tiles faces 子清单），
  * UI 清单 30 → 26 键、6 组 → 5 组。
  * v11 → v12（2026-10-23）：UI 贴图**分组归档** —— public/ui 下按 hand/operate/settle/hud/seat/bg
@@ -93,13 +95,23 @@ const TILES_VER = process.env.MAHJONG_TILES_VER || 'v4';
  * v7 → v8（2026-10-23）：inhand_l / inhand_r 重生成 —— alpha 压实（源图边缘半透明在
  * 26×56→17×16 大幅缩小后被滤波平均进牌身，叠绿桌整列发灰），牌身边际一律不透明。
  */
-const UI_VER = process.env.MAHJONG_UI_VER || 'v13';
+const UI_VER = process.env.MAHJONG_UI_VER || 'v14';
 const PORT = Number(process.env.PORT ?? 3130);
 const TURN_MS = Number(process.env.MAHJONG_TURN_MS ?? 15000);
 /** 掉线托管：回合者无连接时的自动出牌等待 */
 const AUTO_MS = Number(process.env.MAHJONG_AUTO_MS ?? 3000);
-/** 机器人代打节奏（ms）：比掉线托管快一些，减少等待感 */
-const BOT_MS = Number(process.env.MAHJONG_BOT_MS ?? 1200);
+/**
+ * 机器人代打节奏（ms，2026-10-23 改为**随机思考时间**）。
+ * 原来固定 1200ms 出牌、吃碰杠胡**零延迟**，玩家反馈「反应不过来」。
+ * 现在每个动作在 [min, max] 内随机取值：快慢不一才像人在看牌，固定节奏一眼假。
+ *   出牌 1.6~3.6s｜吃碰杠胡响应 0.7~1.8s｜掷骰响应沿用响应区间
+ * 把 *_MAX 设成与下限相同即退回固定节奏；MAHJONG_BOT_MS=0 可整体关掉思考时间。
+ */
+const BOT_MS = Number(process.env.MAHJONG_BOT_MS ?? 1600);
+const BOT_MS_MAX = Number(process.env.MAHJONG_BOT_MS_MAX ?? Math.round(BOT_MS * 2.25));
+/** 机器人对吃/碰/杠/胡的响应思考时间（原为 0，瞬间跳出很突兀） */
+const BOT_CLAIM_MS = Number(process.env.MAHJONG_BOT_CLAIM_MS ?? 700);
+const BOT_CLAIM_MS_MAX = Number(process.env.MAHJONG_BOT_CLAIM_MS_MAX ?? Math.round(BOT_CLAIM_MS * 2.5));
 const THROW_DICE = process.env.MAHJONG_THROW_DICE !== '0';
 /** 掷骰仪式（开局/杠后点骰子按钮）；MAHJONG_CEREMONY=0 关闭 */
 const CEREMONY = process.env.MAHJONG_CEREMONY !== '0';
@@ -128,6 +140,12 @@ interface Player {
   seat: number;
   name: string;
   token: string;
+  /**
+   * 本地生成的**稳定玩家 id**（2026-10-23）：跟随全局、跨房间不变。
+   * `join` 时先用 (pid + 房间码) 找座位 —— 找到就直接续上，掉线/换设备/令牌丢失都能回桌。
+   * 机器人恒为空串（不可被 pid 顶替）。
+   */
+  pid: string;
   ready: boolean;
   ws: WebSocket | null;
   /** 断线宽限计时器：非对局进行中断线时先保留座位，超时未重连才真正离座 */
@@ -157,12 +175,25 @@ interface Room {
   windowTimer: NodeJS.Timeout | null;
   deadlineAt: number | null;
   autoTimer: NodeJS.Timeout | null;
+  /**
+   * 机器人此刻这次决策的「思考截止时间」（2026-10-23）。
+   * 同一个 key 再次进入 syncAuto 时沿用原截止时间，只重挂剩余时长 ——
+   * 否则掉线重连 / 旁人在同一响应窗口应答引发的重复推进，会把思考时间一遍遍重置，
+   * 表现为机器人迟迟不出牌（甚至永远等不到）。
+   */
+  botThink: { key: string; due: number } | null;
   /** 掷骰动画结束后的视图刷新（等待掷骰阶段不自动掷——一直等到玩家点击） */
   diceEndTimer: NodeJS.Timeout | null;
   /** 首局定庄：此定时器让最后一掷的骰子动画与金色点数亮满监听再进对局 */
   dealerStartTimer: NodeJS.Timeout | null;
   /** 没有任何人类连接的起始时间（回收巡检用；有人连接即清空） */
   noHumanSince: number | null;
+  /**
+   * 被房主踢出的玩家 id（2026-10-23）。
+   * **必要**：不然被踢的人一重进就凭 pid 抢回原座位，踢人等于没踢。
+   * 只在本房间存活期内有效（房间被回收即随之消失）。
+   */
+  kicked: Set<string>;
 }
 
 const rooms = new Map<string, Room>();
@@ -194,6 +225,17 @@ function genCode(): string {
 function cleanName(raw: unknown, fallbackSeat: number): string {
   const s = typeof raw === 'string' ? raw.trim().slice(0, 8) : '';
   return s || windName(fallbackSeat);
+}
+
+/**
+ * 校验客户端上报的玩家 id（2026-10-23）。
+ * 只接受 `[A-Za-z0-9_-]` 且 8~64 位 —— 它只用于「找回自己的座位」，不参与任何权限判断，
+ * 但仍要挡住超长串/奇怪字符（会进日志与内存）。
+ * 空串 = 老客户端没发 → 该玩家只能靠 token resume（行为与改版前一致）。
+ */
+function cleanPid(raw: unknown): string {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  return /^[A-Za-z0-9_-]{8,64}$/.test(s) ? s : '';
 }
 
 /**
@@ -380,6 +422,7 @@ function onGameOver(room: Room): void {
   }
   clearDiceTimers(room);
   room.deadlineAt = null;
+  room.botThink = null; // 本局结束：清掉机器人未用完的思考截止
   const g = room.game;
   const dealer = g?.dealer ?? 0;
   const winner = g?.winnerSeat ?? null;
@@ -689,10 +732,24 @@ function isAutoSeat(room: Room, seat: number): boolean {
   return !!p && (p.isBot || p.auto || p.ws === null);
 }
 
-/** 代打节奏：机器人快一些，掉线 / 手动托管沿用原托管等待 */
-function autoDelay(room: Room, seat: number): number {
+/**
+ * 代打节奏（ms）。
+ * · 机器人：按 [min, max] **随机**「想一想」——玩家的观感问题就在这里，
+ *   原先是固定 1200ms 出牌、吃碰杠胡零延迟，节奏既机械又快得来不及看。
+ * · 掉线 / 手动托管：仍用固定 AUTO_MS（那是在替不在场的人补位，越快越好，无需拟人）。
+ * key 标识「这一次决策」（类型 + 座位 + actionSeq）：同一决策被重复推进时保留原截止时间。
+ */
+function autoDelay(room: Room, seat: number, key: string, min: number, max: number): number {
   const p = room.players.find((x) => x.seat === seat);
-  return p?.isBot ? BOT_MS : AUTO_MS;
+  if (!p || !p.isBot) return AUTO_MS;
+  const now = Date.now();
+  const prev = room.botThink;
+  if (prev && prev.key === key && prev.due > now) return prev.due - now;
+  const lo = Math.max(0, Math.round(min));
+  const hi = Math.max(lo, Math.round(max));
+  const d = lo + Math.floor(Math.random() * (hi - lo + 1));
+  room.botThink = { key, due: now + d };
+  return d;
 }
 
 /** 等待点击掷骰的座位（开局 / 翻精 = 庄家，杠后 = 杠者）；无处可掷返回 -1 */
@@ -811,37 +868,48 @@ function syncAuto(room: Room): void {
       } catch {
         /* 状态竞态忽略 */
       }
-    }, autoDelay(room, rollSeat));
+    }, autoDelay(room, rollSeat, `roll:${rollSeat}:${g.actionSeq}`, BOT_CLAIM_MS, BOT_CLAIM_MS_MAX));
     return;
   }
 
   if (g.ritualActive) return; // 动画窗口结束由 syncDice 的定时器回调再次推进
 
   if (g.windowOpen) {
-    // 并行窗口：托管座位代为应答，每次推进一位直至收齐
+    // 并行窗口：托管座位代为应答，每次推进一位直至收齐。
+    // **响应也要「想一想」**：这里是原「零延迟」的地方——机器人碰/杠瞬间跳出，
+    // 玩家连牌河都还没看清。现改为随机延迟后应答，延迟区间取响应用的那一档。
     const seat = g.waitingSeats.find((s) => isAutoSeat(room, s));
     if (seat === undefined) return;
-    try {
-      applyGameEvents(room, g.respond(seat, autoClaim(g, seat)));
-    } catch {
-      /* 已应答等情况忽略 */
-    }
+    const key = `claim:${seat}:${g.actionSeq}`;
+    room.autoTimer = setTimeout(() => {
+      room.autoTimer = null;
+      const gg = room.game;
+      if (!gg || gg.phase !== 'playing' || !gg.windowOpen) return;
+      if (!gg.waitingSeats.includes(seat) || !isAutoSeat(room, seat)) return;
+      try {
+        applyGameEvents(room, gg.respond(seat, autoClaim(gg, seat)));
+      } catch {
+        /* 已应答等情况忽略 */
+      }
+    }, autoDelay(room, seat, key, BOT_CLAIM_MS, BOT_CLAIM_MS_MAX));
     return;
   }
 
   // 轮到托管座位（含吃碰后未摸牌、须直接出牌的回合）
   if (isAutoSeat(room, g.turn)) {
     const seat = g.turn;
+    const key = `turn:${seat}:${g.actionSeq}`;
     room.autoTimer = setTimeout(() => {
       room.autoTimer = null;
       autoTurn(room, seat);
-    }, autoDelay(room, seat));
+    }, autoDelay(room, seat, key, BOT_MS, BOT_MS_MAX));
   }
 }
 
 function startGame(room: Room): void {
   room.phase = 'game';
   room.pendingSwap = null; // 开局后换位请求作废
+  room.botThink = null; // 新一局：作废上一局的思考截止（key 里的 actionSeq 会从 0 重新计数）
   room.game = new Game({
     code: room.code,
     dealer: room.nextDealer,
@@ -986,7 +1054,7 @@ function dropPendingSwapOf(room: Room, seat: number): void {
  * 真正移除一名玩家（并做随之而来的房间清理）。
  * 只有「用户主动离开」与「断线宽限期届满」才走这里。
  */
-function removePlayer(room: Room, seat: number): void {
+function removePlayer(room: Room, seat: number, reason?: string): void {
   const idx = room.players.findIndex((p) => p.seat === seat);
   if (idx < 0) return;
   const [removed] = room.players.splice(idx, 1);
@@ -1016,7 +1084,7 @@ function removePlayer(room: Room, seat: number): void {
     return;
   }
   ensureHost(room); // 房主离场 → 交给座位最靠前的人类（绝不让机器人当房主）
-  broadcastEvent(room, `${windOf(room, removed.seat)}·${removed.name} 离开了房间`);
+  broadcastEvent(room, reason ?? `${windOf(room, removed.seat)}·${removed.name} 离开了房间`);
   if (room.game && room.game.phase === 'playing') {
     // 显式离开 → 中止本局（掉线不走这里，见 handleDisconnect）
     applyGameEvents(room, room.game.forceOver('有玩家离开，本局中止'));
@@ -1038,6 +1106,38 @@ function leaveRoom(ws: WebSocket): void {
   const room = rooms.get(b.code);
   if (!room) return;
   removePlayer(room, b.seat);
+}
+
+/**
+ * 把一条连接接到房间里的某个座位（2026-10-23 抽出）。
+ * 两条入口共用：`resume`（凭本地 token）与 `join`（凭 pid + 房间码 找回座位）。
+ * 换设备 / 重复连接时顶掉旧连接；按房间当前相位选广播方式。
+ */
+function attachSeat(room: Room, player: Player, ws: WebSocket, sameWs: boolean): void {
+  if (player.ws && !sameWs) {
+    binding.delete(player.ws);
+    try {
+      player.ws.close();
+    } catch {
+      /* 旧连接可能已断开 */
+    }
+  }
+  player.ws = ws;
+  binding.set(ws, { code: room.code, seat: player.seat });
+  if (player.reconTimer) {
+    clearTimeout(player.reconTimer);
+    player.reconTimer = null;
+  }
+  if (!sameWs) broadcastEvent(room, `${playerName(room, player.seat)} 重新连接`);
+  if (room.game && room.game.phase === 'playing') {
+    broadcastGame(room);
+    syncAuto(room);
+  } else if (displaying(room)) {
+    // 摊牌展示中：只把大厅状态发给自己（不打断他人看牌）
+    send(ws, lobbyState(room, player.seat));
+  } else {
+    broadcastLobby(room);
+  }
 }
 
 /**
@@ -1106,6 +1206,7 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
           seat,
           name: cleanName(msg.name, seat),
           token,
+          pid: cleanPid(msg.pid),
           ready: false,
           ws,
           reconTimer: null,
@@ -1123,9 +1224,11 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         windowTimer: null,
         deadlineAt: null,
         autoTimer: null,
+        botThink: null,
         diceEndTimer: null,
         dealerStartTimer: null,
         noHumanSince: null,
+        kicked: new Set<string>(),
       };
       rooms.set(code, room);
       binding.set(ws, { code, seat });
@@ -1157,27 +1260,7 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         return;
       }
       const sameWs = player.ws === ws;
-      // 换设备登录：顶掉旧连接
-      if (player.ws && !sameWs) {
-        binding.delete(player.ws);
-        player.ws.close();
-      }
-      player.ws = ws;
-      binding.set(ws, { code: rec.code, seat: rec.seat });
-      if (player.reconTimer) {
-        clearTimeout(player.reconTimer);
-        player.reconTimer = null;
-      }
-      if (!sameWs) broadcastEvent(room, `${playerName(room, rec.seat)} 重新连接`);
-      if (room.game && room.game.phase === 'playing') {
-        broadcastGame(room);
-        syncAuto(room);
-      } else if (displaying(room)) {
-        // 摊牌展示中：只把大厅状态发给自己（不打断他人看牌）
-        send(ws, lobbyState(room, rec.seat));
-      } else {
-        broadcastLobby(room);
-      }
+      attachSeat(room, player, ws, sameWs);
       return;
     }
     case 'join': {
@@ -1189,6 +1272,23 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       const room = rooms.get(code);
       if (!room) {
         send(ws, { t: 'error', reason: '房间不存在，请检查房间码' });
+        return;
+      }
+      /*
+       * ① 先按「玩家 id + 房间码」找自己的座位（2026-10-23）：
+       *   找到就**直接续上**，不受「对局进行中 / 房间已满」限制 ——
+       *   令牌丢失、换设备、或从首页重新输房间号重进，都能回到原座位。
+       *   找不到才走下面的普通加入。
+       */
+      const pid = cleanPid(msg.pid);
+      // 被房主踢过的人：房间存活期内不许再进（否则一重进就抢回原座位，踢人形同虚设）
+      if (pid && room.kicked.has(pid)) {
+        send(ws, { t: 'error', reason: '你已被房主移出该房间，无法再加入' });
+        return;
+      }
+      const mine = pid ? room.players.find((p) => !p.isBot && p.pid === pid) : null;
+      if (mine) {
+        attachSeat(room, mine, ws, mine.ws === ws);
         return;
       }
       if (room.game) {
@@ -1204,7 +1304,7 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       const seat = RANDOM_SEATS ? free[Math.floor(Math.random() * free.length)] : free[0];
       const name = cleanName(msg.name, seat);
       const token = randomUUID();
-      room.players.push({ seat, name, token, ready: false, ws, reconTimer: null, isBot: false, auto: false });
+      room.players.push({ seat, name, token, pid, ready: false, ws, reconTimer: null, isBot: false, auto: false });
       binding.set(ws, { code, seat });
       tokens.set(token, { code, seat });
       broadcastEvent(room, `${windOf(room, seat)}·${name} 加入了房间`);
@@ -1307,6 +1407,7 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         seat,
         name,
         token: randomUUID(), // 不注册进 tokens：机器人座位不可被 resume
+        pid: '', // 机器人没有玩家 id → 永远不会被「按 pid 重进」顶替
         ready: true, // 机器人恒就绪，人类准备完即可开局
         ws: null,
         reconTimer: null,
@@ -1340,6 +1441,56 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         return;
       }
       removePlayer(room, bot.seat);
+      return;
+    }
+    /**
+     * 房主踢人（2026-10-23，用户要求）：解决「有人卡住 / 一直不准备，开不了局」。
+     * · 只能踢真人（机器人走 removeBot）；不能踢自己；
+     * · **对局进行中不允许** —— 那会把整局 abort 掉，要停先 abort；
+     * · 先给被踢者发 `kicked`（客户端据此清本地房间态回首页），再移座。
+     */
+    case 'kick': {
+      const b = binding.get(ws);
+      const room = b ? rooms.get(b.code) : null;
+      if (!b || !room) {
+        send(ws, { t: 'error', reason: '当前不在房间中' });
+        return;
+      }
+      if (b.seat !== room.hostSeat) {
+        send(ws, { t: 'error', reason: '只有房主可以踢人' });
+        return;
+      }
+      const seat = Number(msg.seat);
+      if (!Number.isInteger(seat) || seat === b.seat) {
+        send(ws, { t: 'error', reason: '不能把自己移出房间' });
+        return;
+      }
+      const target = room.players.find((p) => p.seat === seat);
+      if (!target) {
+        send(ws, { t: 'error', reason: '该座位没有人' });
+        return;
+      }
+      if (target.isBot) {
+        send(ws, { t: 'error', reason: '机器人请用「移除」' });
+        return;
+      }
+      if (room.game && room.game.phase === 'playing') {
+        send(ws, { t: 'error', reason: '对局进行中不能踢人，请先解散本局' });
+        return;
+      }
+      const kickName = target.name;
+      if (target.pid) room.kicked.add(target.pid); // 记住被踢的玩家 id，防止凭 pid 立刻抢回
+      if (target.ws) {
+        send(target.ws, { t: 'kicked', reason: '你已被房主移出房间' });
+        binding.delete(target.ws);
+        try {
+          target.ws.close();
+        } catch {
+          /* 连接可能已断开 */
+        }
+        target.ws = null;
+      }
+      removePlayer(room, seat, `${windOf(room, seat)}·${kickName} 已被房主移出房间`);
       return;
     }
     case 'setAuto': {

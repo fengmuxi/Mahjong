@@ -13,7 +13,9 @@
  *
  * 约定：
  *   · 任何一步失败都**只打一条日志**，绝不影响对局（没音效只是没声音）；
- *   · 同一音效连播 → 已播过才 stop + play（不叠音；新 context 不 stop/seek）；
+ *   · 同一音效连播 → 已播过用 `seek(0)` 回开头再播（不叠音），
+ *     **不要 stop()+play()**：微信要求 stop 必须在 canplay 之后，
+ *     高频音效（碰/杠）常在上一次还没 canplay 时被再次触发 → 504「error player to stop」；
  *   · 静音键不掐断音效（obeyMuteSwitch = false + app.js 的全局 setInnerAudioOption）；
  *   · `unlock()` 在用户交互时调用；清单没就绪不置 unlocked，下次交互继续重试
  *     （否则「他人出牌 / 碰杠胡」这类无交互触发的音效在 iOS 真机上不响）；
@@ -288,24 +290,50 @@ function createCtx(key, url) {
   ctx.obeyMuteSwitch = false; // 静音键不掐断游戏音效
   ctx.src = url;
   ctx._mjUrl = url;
-  ctx._mjStarted = false;
+  /**
+   * 是否**确实在播**：只认 onPlay / onEnded / onStop 三个事件，**绝不乐观置位**。
+   * 早期版本在 `play()` 之后立刻置 true，于是「还没 canplay 就再次触发」会走到
+   * `stop()` —— 微信要求 stop 必须在 canplay 之后调，否则原生播放器直接报
+   * `errCode 504 / error player to stop`（用户 2026-10-23 贴的正是这条，
+   * 与域名配置无关）。
+   */
+  ctx._mjPlaying = false;
+  /** 最近一次**我们自己**调 stop() 的时刻：用于放过随之而来的状态噪声 */
+  ctx._mjStopAt = 0;
   ctx.onPlay(() => {
-    ctx._mjStarted = true;
+    ctx._mjPlaying = true;
     failCounts.delete(key);
     failAt.delete(key);
   });
   ctx.onStop(() => {
-    ctx._mjStarted = false;
+    ctx._mjPlaying = false;
   });
   ctx.onEnded(() => {
-    ctx._mjStarted = false;
+    ctx._mjPlaying = false;
   });
   ctx.onError((err) => {
-    ctx._mjStarted = false;
+    ctx._mjPlaying = false;
+    const code = (err && err.errCode) || 0;
+    const msg = (err && err.errMsg) || 'unknown';
+    // ① 我们自己 stop 之后 400ms 内的报错 = 播放器状态噪声，不计数（否则连点几次就永久静音）
+    if (Date.now() - (ctx._mjStopAt || 0) < 400) {
+      log('info', `[sound] ${key} 停止时的状态噪声（${code} ${msg}）→ 忽略`);
+      return;
+    }
+    // ② 504 / "error player to stop" 是**播放器状态错误**（未 canplay 就 stop），
+    //    不是域名/网络问题 —— 既不计数也不建议改域名，免得被误导去查域名配置。
+    if (code === 504 || /player to stop/i.test(msg)) {
+      log('warn', `[sound] ${key} 播放器状态异常（${code} ${msg}）→ 不计入失败；持续无声再看 errCode 10002/10003`);
+      return;
+    }
     const n = (failCounts.get(key) || 0) + 1;
     failCounts.set(key, n);
     failAt.set(key, Date.now());
-    log('warn', `[sound] 播放失败 ${key}（第 ${n} 次）：${(err && err.errMsg) || 'unknown'}（检查 downloadFile 合法域名是否含音频域名）`);
+    const hint =
+      code === 10001 || code === 10002
+        ? '（网络/域名：检查 downloadFile 合法域名是否含音频域名）'
+        : '（文件/格式：确认 public/sound 已部署且为 mp3）';
+    log('warn', `[sound] 播放失败 ${key}（第 ${n} 次）：errCode ${code} ${msg}${hint}`);
   });
   pool.set(key, ctx);
   return ctx;
@@ -349,18 +377,38 @@ function play(key, opts) {
     if (ctx._mjUrl !== url) {
       ctx.src = url;
       ctx._mjUrl = url;
+      ctx._mjPlaying = false;
     }
     const vol = opts && opts.volume !== undefined ? opts.volume : DEFAULT_VOLUME;
     ctx.volume = vol;
-    if (ctx._mjStarted) {
+    /*
+     * 重触发：**seek(0) 回到开头继续播**，不要 stop()（2026-10-23 修 504）。
+     * 微信要求 stop() 必须在 canplay 之后调用；「碰」这类高频音效常在上一次
+     * 还没 canplay 时就被再次触发，旧写法 `stop(); play();` 于是稳定报
+     * `errCode 504 / error player to stop`。
+     * 只有极老基础库没有 seek 时才退回 stop+play，并记下 stop 时刻让 onError 放过噪声。
+     */
+    if (ctx._mjPlaying) {
+      let seeked = false;
       try {
-        ctx.stop();
+        if (typeof ctx.seek === 'function') {
+          ctx.seek(0);
+          seeked = true;
+        }
       } catch (e) {
-        /* 忽略 */
+        seeked = false;
+      }
+      if (!seeked) {
+        ctx._mjStopAt = Date.now();
+        try {
+          ctx.stop();
+        } catch (e) {
+          /* 忽略：状态错误已由 onError 的 400ms 窗口放过 */
+        }
+        ctx._mjPlaying = false;
       }
     }
     ctx.play();
-    ctx._mjStarted = true;
     lastPlayed.set(key, now);
     return true;
   } catch (e) {
@@ -526,11 +574,15 @@ function setEnabled(v) {
   }
   if (!enabled) {
     for (const ctx of pool.values()) {
+      // 只停「确实在播」的实例：未 canplay 就 stop 会触发 504 状态错误
+      if (!ctx._mjPlaying) continue;
+      ctx._mjStopAt = Date.now();
       try {
         ctx.stop();
       } catch (e) {
-        /* 忽略 */
+        /* 忽略：状态错误已由 onError 的 400ms 窗口放过 */
       }
+      ctx._mjPlaying = false;
     }
     bgmPause();
   } else {

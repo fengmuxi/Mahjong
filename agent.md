@@ -214,7 +214,7 @@ npm run build        # 改协议/渲染后确认能构建出 dist
 - **机器人**：房主在大厅 `addBot` 补位（满 4 人 / 对局中不可加）、大厅 `removeBot` 移除；机器人 `ready=true`、`ws=null`、token **不注册**进 `tokens`（不可 resume）；满 4 人后自动掷定庄骰（`syncBotDealerRolls`，并列重掷后自动补掷）。
 - **手动托管**：对局 HUD「托管」按钮发 `setAuto`，可随时开关；托管中该按钮高亮、牌桌铭牌显示「托管中」（`GameView.auto`，广播时由服务端按 `isBot || auto || ws === null` 填充）。
 - **两个易错点**：① 出牌调度**不能只看 `justDrew`**——吃/碰后 `justDrew=false` 但仍须出牌，`syncAuto` 按「轮到你且无窗口」调度；② 窗口代应答只看 `waitingSeats`（未答复者），不能用 `awaiting` 全量（含已答复者会互相等、卡到超时）。
-- **节奏**：机器人用 `MAHJONG_BOT_MS`（默认快），人类托管 / 掉线沿用 `MAHJONG_AUTO_MS`。
+- **节奏**：机器人用 `MAHJONG_BOT_MS` / `MAHJONG_BOT_MS_MAX`（出牌，区间内**随机**）、`MAHJONG_BOT_CLAIM_MS` / `MAHJONG_BOT_CLAIM_MS_MAX`（吃碰杠胡响应，原来零延迟）；人类托管 / 掉线沿用 `MAHJONG_AUTO_MS`（固定，越快越好，不拟人）。随机值的「这次决策」由 `actionSeq + 座位 + 类型` 标识并记在 `room.botThink`，重复推进只重挂剩余时长——否则重连/旁人应答会把思考时间一遍遍重置。
 - 大厅座位卡：机器人不可换位（恒 `ready`）、房主卡片带「移除」按钮；`addBot`/`removeBot` 仅房主且仅大厅（`room.game` 为 null）。
 
 ## 6. ⚠️ 铁律：规则/算分改动流程
@@ -236,7 +236,10 @@ npm run build        # 改协议/渲染后确认能构建出 dist
 | `PORT` | 3000 | 监听端口 |
 | `MAHJONG_TURN_MS` | 15000 | 响应窗口（共享 15s 倒计时） |
 | `MAHJONG_AUTO_MS` | 3000 | 掉线 / 手动托管自动出牌等待 |
-| `MAHJONG_BOT_MS` | 1200 | 机器人自动掷骰 / 应答 / 出牌的等待（更快的凑桌体验） |
+| `MAHJONG_BOT_MS` | 1600 | 机器人**出牌**思考时间下限（随机区间起点） |
+| `MAHJONG_BOT_MS_MAX` | 3600 | 机器人出牌思考时间上限（默认 = 下限 × 2.25；两值相等→固定节奏，`0`→不等待） |
+| `MAHJONG_BOT_CLAIM_MS` | 700 | 机器人**吃/碰/杠/胡响应**思考时间下限（原先零延迟，太突兀） |
+| `MAHJONG_BOT_CLAIM_MS_MAX` | 1750 | 吃碰杠胡响应思考时间上限（默认 = 下限 × 2.5；机器人掷骰也用这一档） |
 | `MAHJONG_THROW_DICE` | `1` | 掷骰补杠开关（`'0'` 关 → 摸倒数第一张） |
 | `MAHJONG_CEREMONY` | `1` | 掷骰仪式总开关（`'0'` 关） |
 | `MAHJONG_DEAL_MS` | 6500 | 开局发牌动画窗口 |

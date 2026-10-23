@@ -168,8 +168,29 @@
     <view class="g-status {{overPhase ? 'over' : ''}}">
       <text class="g-status-text err" wx:if="{{controlsErrShown}}">⚠ {{controlsErrText}}</text>
       <text class="g-status-text" wx:else>{{statusText}}</text>
+      <!-- 听牌提示（2026-10-23）：服务端下发 view.waits，这里只显示，不做任何规则计算 -->
+      <text class="waits-chip" wx:if="{{waitsText}}">{{waitsText}}</text>
       <text class="countdown" wx:if="{{countdownShown}}">{{countdownText}}</text>
       <view class="settle-restore" wx:if="{{settleRestoreShown}}" bindtap="onSettleRestore">本局结算 ▲</view>
+    </view>
+
+    <!--
+      报杠行（2026-10-23）：手牌条**正上方**一排按钮。
+      报杠的条件是「手里恰好三张」（自己回合、未被挂起），不依赖碰/杠/胡响应窗口，
+      所以不能塞进下面的 .claim-mask —— 那会只在某个瞬间出现，而且会被遮罩盖住。
+      可能同时有多张可报 → 一个牌面一个钮。
+      **只在「本玩法支持报杠 + 确实有可报牌面」时整行渲染**（南昌等玩法/没凑齐三张时不占任何高度）；
+      显隐由 data.declareEnabled 控制，并进 chromeKey 让画布在翻转那一帧重量，避免溢出。
+    -->
+    <view class="declare-row" wx:if="{{declareEnabled}}">
+      <button
+        wx:for="{{declares}}"
+        wx:key="tile"
+        class="declare-btn"
+        disabled="{{declareBusy}}"
+        data-tile="{{item.tile}}"
+        bindtap="onDeclareTap"
+      >报杠 {{item.name}}</button>
     </view>
 
     <!--

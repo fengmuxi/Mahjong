@@ -183,6 +183,9 @@ export interface GameView {
   /** 报杠（赣州 §8.5）：我当前可「展示三张」的牌面（自己回合、手牌恰好 3 张且未被挂起）；
    *  非报杠玩法恒为空数组 */
   declareOptions: Tile[];
+  /** 本玩法是否开启报杠（FlowConfig.declaredKong）——客户端「报杠常驻按钮」的显隐依据。
+   *  前端不判玩法，只认这个开关（2026-10-23 起下发；老服务端缺省 undefined 视为关闭）。 */
+  declareEnabled?: boolean;
   /** 全场已展示的报杠（seat 拥有该牌面的三张冻结牌）——对手明牌渲染与强制出牌判定的唯一来源 */
   declared: { seat: number; tile: Tile }[];
   /** 我本回合必须打出的牌面（持有他人/自己已展示的牌面时；可多张，任打其一即可） */
@@ -193,6 +196,12 @@ export interface GameView {
   zimoLabel: string | null;
   /** 我刚摸到的牌（渲染时置于最右侧并高亮；非我回合或已打牌为 null） */
   drawn: Tile | null;
+  /**
+   * 听牌提示（2026-10-23）：当前手牌**再摸到哪几张能自摸胡**（含赣州精吊/精代牌口径）。
+   * 只对赣州类玩法下发（无精玩法恒为空数组）；空数组 = 未听或不该提示。
+   * 前端只负责显示，不做任何规则计算。
+   */
+  waits?: Tile[];
   /** 四家连接状态（false = 掉线；机器人恒为 true） */
   connected: boolean[];
   /** 四家是否由服务端代打（机器人 / 手动托管 / 掉线，均为 true）——供牌桌「托管中」标记 */
@@ -237,9 +246,14 @@ export interface DealerRoll {
 }
 
 export type ClientMsg =
-  /** 创建房间：variant = 玩法 id（缺省南昌） */
-  | { t: 'create'; name: string; variant?: string }
-  | { t: 'join'; code: string; name: string }
+  /** 创建房间：variant = 玩法 id（缺省南昌）；pid = 本地稳定玩家 id（可选，老客户端不发） */
+  | { t: 'create'; name: string; variant?: string; pid?: string }
+  /**
+   * 加入房间：`pid` 是**本地生成、跟随全局的玩家 id**（2026-10-23）。
+   * 服务端先用 (pid, code) 找座位 —— 找到就**直接续上该座位**（哪怕房间在对局中 / 已满），
+   * 找不到才按普通加入处理。这样掉线 / 换设备 / 令牌丢失后，从首页重新输入房间号也能回到原座位。
+   */
+  | { t: 'join'; code: string; name: string; pid?: string }
   | { t: 'resume'; token: string }
   | { t: 'ready'; ready: boolean }
   | { t: 'leave' }
@@ -259,6 +273,12 @@ export type ClientMsg =
   | { t: 'dissolve' }
   /** 房主：强制结束当前对局并返回房间（不解散房间） */
   | { t: 'abort' }
+  /**
+   * 房主：把某个座位上的**真人**请出房间（2026-10-23）。
+   * 只为解决「有人卡住 / 一直不准备导致开不了局」；**对局进行中不允许**（先 abort 再踢）。
+   * 机器人仍走 `removeBot`。
+   */
+  | { t: 'kick'; seat: number }
   /** 局内聊天：text 为消息正文（服务端清洗控制字符后按 CHAT_TEXT_MAX 截断） */
   | { t: 'chat'; text: string }
   /** 定向互动表情：向 target 座位扔 emote（THROW_EMOJI 的 id）；不可扔给自己 */
@@ -385,6 +405,11 @@ export type ServerMsg =
     }
   /** 有人请求与你换位（被请求方收到） */
   | { t: 'swapAsk'; from: number; fromName: string }
+  /**
+   * 你被房主移出房间（2026-10-23）。客户端收到后要**清掉本地房间态并回首页**，
+   * 不能再拿旧 token 自动 resume（否则会绕开踢人、又被拽回牌桌）。
+   */
+  | { t: 'kicked'; reason: string }
   | { t: 'game'; view: GameView }
   | {
       t: 'settle';
