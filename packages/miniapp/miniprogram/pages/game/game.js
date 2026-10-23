@@ -53,10 +53,10 @@ const LOG_ACTION_LABEL = {
   hu: '胡',
   draw: '流局',
 };
-/** 动作日志 kind → 音效键（2026-10-23）。吃没有专属音效，用「牌点击」代替。 */
+/** 动作日志 kind → 音效键（2026-10-23）。 */
 const SOUND_BY_ACTION = {
   discard: 'discard',
-  chi: 'click',
+  chi: 'chi',
   peng: 'peng',
   gang: 'gang',
   angang: 'gang',
@@ -128,6 +128,8 @@ Page({
     autoShown: false,
     autoOn: false,
     dissolveGameShown: false,
+    /** 背景音乐开关（2026-10-23）：与音效总开关独立，持久化在 utils/sound.js */
+    bgmOn: true,
     // 画布
     canvasW: 640,
     canvasH: 320,
@@ -361,6 +363,8 @@ Page({
     this.computeSafeInsets(); // 刘海 / 挖孔屏：每次显示重测（旋转方向变了内缩侧会互换）
     this.initCanvas();
     sound.ensure(); // 局内音效清单（CDN）；失败即静音，不影响对局
+    this.setData({ bgmOn: sound.isBgmEnabled() }); // 侧轨音乐钮反映持久化开关
+    sound.bgmStart(); // 背景音乐：循环播放；iOS 首次手势后由 unlock() 再起
     this.startCountdown();
     const g = getApp().globalData;
     if (g.lastGameView) this.renderGame(g.lastGameView);
@@ -370,12 +374,14 @@ Page({
     room.detach(this);
     this.stopCountdown();
     this.clearDice();
+    sound.bgmPause(); // 切后台/离开页面暂停，回来 onShow 继续
   },
 
   onUnload() {
     room.detach(this);
     this.stopCountdown();
     this.clearDice();
+    sound.bgmStop(); // 退局释放背景音乐实例
     if (this.windowResizeHandler && wx.offWindowResize) wx.offWindowResize(this.windowResizeHandler);
     this.windowResizeHandler = null;
     if (this.ceremonyExpiryTimer) clearTimeout(this.ceremonyExpiryTimer);
@@ -983,7 +989,7 @@ Page({
           controls.push({ text: `杠 ${t}`, cap: t, act: { t: 'claim', kind: 'gang' }, art: uiart.urlOf('gang') });
         }
       }
-      controls.push({ text: '过', cap: '', act: { t: 'pass' }, ghost: true, art: uiart.urlOf('guo') });
+      controls.push({ text: '过', cap: '', act: { t: 'pass' }, ghost: true, art: uiart.urlOf('guo') });
       // 同屏 ≥7 个钮（吃 3 组 + 碰/杠/胡 + 过）时全体缩一号，否则 7×108=756rpx > 750rpx 必换行
       this.setData({ statusText: status, controls, ctrlCompact: controls.length >= 7 });
       return;
@@ -1017,7 +1023,7 @@ Page({
       status =
         (awaitingAll.length ? `等待 ${awaitingAll.join('、')} 应答…` : '等待响应…') +
         (v.skipRon ? '（你已过水，暂不能点炮胡）' : '');
-    else status = `等待${this.wind(v.turn)}家行动…`;
+    else status = `等待${this.wind(v.turn)}家行动…`;
 
     // 同屏 ≥7 个钮（吃 3 组 + 碰/杠/胡 + 过）时全体缩一号，否则 7×108=756rpx > 750rpx 必换行
 
@@ -1058,6 +1064,7 @@ Page({
     const idx = Number(e.currentTarget.dataset.idx);
     const item = this.data.controls[idx];
     if (!item || item.disabled) return;
+    sound.unlock(); // 用户手势里补一次解锁（清单晚到时下次操作仍有机会）
     room.send(item.act);
     this.lockControls();
     // 音效：自己执行的动作即时反馈（他人动作由 playActionSounds 按日志播，避免双响）
@@ -1065,7 +1072,7 @@ Page({
     if (k === 'peng') sound.play('peng');
     else if (k === 'gang' || k === 'angang' || k === 'bugang') sound.play('gang');
     else if (k === 'hu') sound.play('hu');
-    else if (k === 'chi') sound.play('click');
+    else if (k === 'chi') sound.play('chi');
   },
 
   lockControls() {
@@ -1086,6 +1093,7 @@ Page({
         return;
       }
     }
+    sound.unlock(); // 用户手势里补一次解锁
     sound.play('discard'); // 本地即时反馈（自己出牌；他人的由日志播）
     room.send({ t: 'discard', tile });
   },
@@ -1627,6 +1635,20 @@ Page({
   onAuto() {
     if (!net.isOpen()) return;
     room.send({ t: 'setAuto', auto: !this.data.autoOn });
+  },
+
+  /**
+   * 背景音乐开关（2026-10-23）：右轨 🎵 钮，**与音效总开关独立**（音效含点击/出牌/碰杠胡）。
+   * 关 → 立即暂停，保留实例与进度；开 → 立即续播，不重下 1MB 音频。
+   * iOS 首次播放必须由用户手势触发 —— **这次点击本身就是手势**，所以开启前先
+   * unlock()，否则要等下一次出牌才出声（表现为「开关打开了却没反应」）。
+   */
+  onToggleBgm() {
+    const next = !sound.isBgmEnabled();
+    if (next) sound.unlock(); // 手势内解锁音频会话；清单没就绪会在下次手势自动重试
+    const on = sound.setBgmEnabled(next);
+    this.setData({ bgmOn: on });
+    ui.showToast(this, on ? '背景音乐已开启' : '背景音乐已关闭', 1200);
   },
 
   /**

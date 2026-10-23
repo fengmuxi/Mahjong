@@ -68,6 +68,8 @@
     <view class="rail rail-r" wx:if="{{!diceShown}}">
       <button class="rail-btn {{chatOpen ? 'on' : ''}}" bindtap="onToggleChat">💬<text class="rail-badge" wx:if="{{chatUnread > 0}}">{{chatUnread > 99 ? '99+' : chatUnread}}</text></button>
       <button class="rail-btn {{autoOn ? 'on' : ''}}" wx:if="{{autoShown}}" bindtap="onAuto">🤖</button>
+      <!-- 背景音乐开关（2026-10-23）：与音效总开关独立；开=金底 🎵，关=灰底 🔇 -->
+      <button class="rail-btn {{bgmOn ? 'on' : ''}}" bindtap="onToggleBgm">{{bgmOn ? '🎵' : '🔇'}}</button>
       <button class="rail-btn" bindtap="onEmoteOpen">🎯</button>
       <button class="rail-btn danger" wx:if="{{dissolveGameShown}}" bindtap="onAbort">✕</button>
     </view>

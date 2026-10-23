@@ -28,9 +28,9 @@ public/
 │   │   └── d0..d9.webp            大数字（0.688 比例）
 │   └── bg/                web 端背景平铺纹理（2，1024×1024 1x）
 │       └── bg-cloud/bg-lattice.webp   style.css 经 --bg-texture 变量吃地址（main.ts applyBgTexture）
-└── sound/                 局内音效（独立分类，6 个 · 101KB · 版本 SOUND_VER）
-    ├── discard.mp3 出牌 · deal.mp3 发牌/摸牌 · gang.mp3 杠 · peng.mp3 碰 · hu.mp3 胡 · click.mp3 点牌
-    └── （bgm.mp3 约 1MB 不接入：流量/下载卡顿不划算，仅存档于源目录）
+└── sound/                 音频（独立分类，8 个 · 约 1.18MB · 版本 SOUND_VER）
+    ├── discard.mp3 出牌 · deal.mp3 发牌/摸牌 · gang.mp3 杠 · peng.mp3 碰 · hu.mp3 胡 · chi.mp3 吃 · click.mp3 点牌
+    └── bgm.mp3 背景音乐（约 65s 循环 / 1.0MB）：客户端按需下载 + 独立开关，不进代码包
 ```
 
 ## 接口
@@ -39,11 +39,11 @@ public/
 |---|---|---|
 | `GET /api/tiles` | `{version, base, tiles:['t00.webp',…], faces:{faceA:'face/faceA.webp',…}}` | 34 张立牌 + 4 张平放牌子清单 |
 | `GET /api/ui` | `{version, base, images:{key:'<group>/<key>.webp',…}}` | 26 键 5 组，**值是组内相对路径** |
-| `GET /api/sound` | `{version, base, sounds:{key:'<key>.mp3'}}` | 6 键音效清单 |
+| `GET /api/sound` | `{version, base, sounds:{key:'<key>.mp3'}}` | 8 键音频清单（7 音效 + bgm） |
 | `GET /tiles/t<XX>.webp` | webp | 立牌，长缓存 immutable |
 | `GET /tiles/face/face<X>.webp` | webp | 平放牌图集（仅 faceA..D），长缓存 immutable |
 | `GET /ui/<group>/<key>.webp` | webp | 长缓存 immutable；只认已知组名单层 webp |
-| `GET /sound/<key>.mp3` | mp3 | 长缓存 immutable |
+| `GET /sound/<key>.mp3` | mp3 | 长缓存 immutable；支持 Range/206（iOS 播放器必需） |
 
 客户端（小程序 `utils/tileimg.js` 管牌面、`utils/uiart.js` 管 UI、web `src/tileart.ts` /
 `main.ts applyBgTexture`）拼 `${base}/<类>/<清单值>` —— **不感知分组结构**，分组调整不影响客户端代码。

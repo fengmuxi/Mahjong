@@ -605,24 +605,33 @@
   padding: 0;
   border: 0;
   background: transparent;
-  margin: 2rpx 8rpx !important;
+  margin: 1px 4px !important;
 }
+/*
+ * 2026-10-23 用户报「操作按钮显示太大、底部信息显示不全」：图标原来用 rpx
+ * （92×78rpx），在宽而矮的横屏窗口里 1rpx 被放大到 1.3~2.5px，图标长到
+ * 100~235px，远超 66px 的手牌和 68px 的遮罩，caption 被顶出屏幕。
+ * 改为 px 定尺（375px 宽基准），再用 max-* 挂回 rpx —— 窄屏仍按比例缩，
+ * 宽屏不再放大。宽高上限同比例（2rpx:1px），不会拉变形。
+ */
 .ctrl.art .ctrl-img {
   display: block;
-  width: 92rpx;
-  height: 78rpx;
+  width: 46px;
+  max-width: 92rpx;
+  height: 39px;
+  max-height: 78rpx;
   margin: 0 auto;
 }
 .ctrl.art .ctrl-cap {
   display: block;
-  margin: -12rpx auto 0;
-  padding: 1rpx 8rpx;
-  max-width: 108rpx;
+  margin: -6px auto 0;
+  padding: 0 4px;
+  max-width: 54px;
   border-radius: 999rpx;
   background: rgba(8, 12, 18, 0.72);
   color: #f2e6c8;
-  font-size: 18rpx;
-  line-height: 20rpx;
+  font-size: 9px;
+  line-height: 10px;
   text-align: center;
   white-space: nowrap;
   overflow: hidden;
@@ -631,20 +640,22 @@
 
 /*
  * 同屏 ≥7 个钮时的**全体小号**（2026-10-23）：7 个钮（吃 3 组 + 碰/杠/胡 + 过）按
- * 92rpx 排一行要 7×108 = 756rpx > 750rpx 基准，必然换行并顶出 claim-mask（实测溢出
+ * 46px 排一行要 7×(46+8) = 378px > 375px 基准，必然换行并顶出 claim-mask（实测溢出
  * 16~21px）。**必须全体一起缩** —— 只缩吃钮会让同屏图标大小不一（用户报「有的显示
- * 更大有的更小」）。76rpx 时 7×92 = 644rpx < 750rpx，一行放得下。
+ * 更大有的更小」）。38px 时 7×(38+8) = 322px < 375px，一行放得下。
  */
 .ctrl.art.compact .ctrl-img {
-  width: 76rpx;
-  height: 64rpx;
+  width: 38px;
+  max-width: 76rpx;
+  height: 32px;
+  max-height: 64rpx;
 }
 .ctrl.art.compact .ctrl-cap {
-  margin-top: -10rpx;
-  padding: 1rpx 6rpx;
-  max-width: 86rpx;
-  font-size: 16rpx;
-  line-height: 18rpx;
+  margin-top: -5px;
+  padding: 0 3px;
+  max-width: 43px;
+  font-size: 8px;
+  line-height: 9px;
 }
 
 /* 结算艺术字：面板标题上方的胜利/失败/平局（CDN；未就绪整块不渲染） */
@@ -661,7 +672,7 @@
 .tray-stack {
   position: relative;
   width: 100%;
-  min-height: 96rpx;
+  min-height: 68px;
   display: flex;
   justify-content: center;
 }
@@ -686,11 +697,11 @@
 
 /* 遮罩里的按钮自带外观（半透明底上要保证可辨识） */
 .controls button {
-  height: 60rpx;
-  line-height: 58rpx;
-  font-size: 24rpx;
-  padding: 0 20rpx;
-  margin: 4rpx 5rpx;
+  height: 30px;
+  line-height: 28px;
+  font-size: 12px;
+  padding: 0 10px;
+  margin: 2px 3px;
 }
 
 /*
@@ -915,6 +926,8 @@
   gap: 10rpx;
   flex-wrap: wrap;
   margin-bottom: 12rpx;
+  /* 2026-10-23 居中：面板是宽卡片，目标钮不足一行时靠左会与下面居中的表情格子错开 */
+  justify-content: center;
 }
 
 .emote-target {
@@ -938,6 +951,8 @@
   font-size: 22rpx;
   color: #9db5a8;
   margin: 8rpx 0;
+  /* 与下方居中的表情格子对齐（原来靠左，格子一居中就成了孤立标签） */
+  text-align: center;
 }
 
 .emote-group.good {
@@ -952,21 +967,49 @@
   display: flex;
   gap: 8rpx;
   flex-wrap: wrap;
+  /*
+   * 2026-10-23 居中（用户报「互动中的显示出现异常」）：格子是可变宽度的胶囊，
+   * 每行能排几个取决于文案长度 —— 原来默认 flex-start，7 个表情排成 6+1，
+   * 第二行单个「比心」顶在最左、右侧空出半张卡片，看起来像排版错位。
+   * 每行居中后：首行居中、末行单个也居中，视觉上是一个居中的整体。
+   */
+  justify-content: center;
 }
 
+/*
+ * 胶囊本体（2026-10-23 「中间的图标没有居中」）。
+ *
+ * 坑：app.wxss 的 `button { display: inline-block !important }` 会压掉普通
+ * `display: flex`，于是图标与文案退化成行内流、按 **baseline** 对齐 ——
+ * 16px 的 emoji 顶得比 10px 的文案高半行，视觉上就是「图标没居中」。
+ *
+ * 修法：用**同样带 !important 的类选择器**（类优先级 > 元素）把它改成
+ * inline-flex，再 `align-items: center` + `justify-content: center` 真正居中；
+ * 图标与文案之间用 `gap` 固定间距，不再依赖 emoji 字形的自带边距。
+ */
 .emote-cell {
-  height: 88rpx;
-  font-size: 20rpx;
-  padding: 0 12rpx;
-  display: flex;
-  flex-direction: column;
+  display: inline-flex !important;
   align-items: center;
   justify-content: center;
+  flex-direction: row;
+  gap: 5rpx;
+  height: 88rpx;
+  font-size: 20rpx;
+  padding: 0 14rpx;
   line-height: 1.2;
 }
 
 .emote-cell .ico {
   font-size: 32rpx;
+}
+
+/*
+ * 兜底（2026-10-23）：万一某些基础库版本的 `<button>` 不吃 display 覆盖，
+ * 归位后仍是行内流 —— 那就让两个 text 都用 vertical-align: middle 对齐中线，
+ * 避免 16px 的 emoji 按 baseline 顶高。flex 生效时这条被忽略，无副作用。
+ */
+.emote-cell text {
+  vertical-align: middle;
 }
 
 .settle-card {

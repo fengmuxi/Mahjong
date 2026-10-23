@@ -144,12 +144,35 @@ const WALL_LEFT_X = 284;
 const WALL_RIGHT_X = 974;
 const WALL_V_LIMIT = 540;
 const GHOST_MS = 420;
-const BUBBLE_W_NARROW = 138;
-const BUBBLE_W_WIDE = 230;
-const BUBBLE_LINE_H = 15;
-const BUBBLE_MAX_LINES = 3;
-const BUBBLE_MS = 4200;
+/**
+ * 铭牌气泡（2026-10-23 放大，用户报「聊天气泡太小不好查看」）。
+ *
+ * 画布是 **1280×640 逻辑定尺**，而手机横屏实际只把它缩到 ~0.46~0.52 倍显示
+ *（行高卡住宽：canvasW = min(行宽−88, 行高×2)），所以画布里的 12px 字
+ * 落到屏幕上只有 **5.5~6px** —— 聊天内容根本看不清（桌面宽窗也才 9px）。
+ * 这里按 **~1.8 倍**整体放大，字号 / 行高 / 内边距 / 圆角 / 尾巴 同比例，
+ * 避免「大字号塞进小胶囊」：
+ *
+ *   字号 12 → 22（表情气泡 14 → 26）   · 行高 15 → 30
+ *   窄侧宽 138 → 240 / 宽侧 230 → 340   · 最多行数 3 → 4
+ *   内边距 (9,6) → (15,11) · 圆角 8 → 13 · 尾巴 6/7 → 9/11
+ *
+ * 落到屏幕上的实际字号：手机横屏 ≈ 10~11px、桌面宽窗 ≈ 17px（原 5.5~9px）。
+ * 停留时间同步 4.2s → 5.2s，4 行中文才有足够阅读时间。
+ */
+const BUBBLE_W_NARROW = 240;
+const BUBBLE_W_WIDE = 340;
+const BUBBLE_LINE_H = 30;
+const BUBBLE_MAX_LINES = 4;
+const BUBBLE_MS = 5200;
 const BUBBLE_FADE = 420;
+/** 气泡字号（画布 px）：普通聊天 / 互动表情 */
+const BUBBLE_FONT = 22;
+const BUBBLE_FONT_EMOTE = 26;
+/** 气泡内边距与圆角（随字号一起放大） */
+const BUBBLE_PAD_X = 15;
+const BUBBLE_PAD_Y = 11;
+const BUBBLE_RADIUS = 13;
 const EMOTE_MS = 1250;
 const EMOTE_FLY = 0.38;
 /** 小程序无 "Microsoft YaHei"，统一用系统默认族（iOS/Android 各自回退到中文字体） */
@@ -2216,40 +2239,40 @@ class Table {
       const wide = slot === 2 || slot === 3;
       const maxW = wide ? BUBBLE_W_WIDE : BUBBLE_W_NARROW;
       const emote = b.kind === 'emote';
-      ctx.font = font(emote ? 14 : 12, emote);
-      const lines = this.wrapText(b.content, maxW - 18, BUBBLE_MAX_LINES);
+      ctx.font = font(emote ? BUBBLE_FONT_EMOTE : BUBBLE_FONT, emote);
+      const lines = this.wrapText(b.content, maxW - BUBBLE_PAD_X * 2, BUBBLE_MAX_LINES);
       if (lines.length === 0) continue;
       let textW = 0;
       for (const l of lines) textW = Math.max(textW, ctx.measureText(l).width);
-      const w = Math.min(maxW, Math.ceil(textW) + 18);
-      const h = lines.length * BUBBLE_LINE_H + 12;
+      const w = Math.min(maxW, Math.ceil(textW) + BUBBLE_PAD_X * 2);
+      const h = lines.length * BUBBLE_LINE_H + BUBBLE_PAD_Y * 2;
       const leftSide = slot === 0 || slot === 3;
       const up = slot === 0 || slot === 1;
       let x = leftSide ? tag.x : tag.x + tag.w - w;
-      let y = up ? tag.y - 8 - h : tag.y + tag.h + 8;
+      let y = up ? tag.y - 11 - h : tag.y + tag.h + 11;
       x = Math.max(8, Math.min(W - 8 - w, x));
       y = Math.max(8, Math.min(H - 8 - h, y));
       const age = now - b.t0;
       ctx.globalAlpha = Math.max(0, Math.min(1, age / 160, (BUBBLE_MS - age) / BUBBLE_FADE));
       const bg = emote ? 'rgba(48,34,10,0.94)' : 'rgba(16,26,21,0.92)';
-      roundRect(ctx, x, y, w, h, 8);
+      roundRect(ctx, x, y, w, h, BUBBLE_RADIUS);
       ctx.fillStyle = bg;
       ctx.fill();
       ctx.strokeStyle = emote ? '#e6c14b' : 'rgba(255,255,255,0.22)';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2;
       ctx.stroke();
-      const tailX = leftSide ? tag.x + 20 : tag.x + tag.w - 20;
+      const tailX = leftSide ? tag.x + 30 : tag.x + tag.w - 30;
       ctx.beginPath();
-      ctx.moveTo(tailX - 6, up ? y + h : y);
-      ctx.lineTo(tailX + 6, up ? y + h : y);
-      ctx.lineTo(tailX, up ? y + h + 7 : y - 7);
+      ctx.moveTo(tailX - 9, up ? y + h : y);
+      ctx.lineTo(tailX + 9, up ? y + h : y);
+      ctx.lineTo(tailX, up ? y + h + 11 : y - 11);
       ctx.closePath();
       ctx.fillStyle = bg;
       ctx.fill();
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillStyle = emote ? '#ffe9a8' : '#e8efe9';
-      lines.forEach((l, i) => ctx.fillText(l, x + 9, y + 6 + BUBBLE_LINE_H * i + BUBBLE_LINE_H / 2));
+      lines.forEach((l, i) => ctx.fillText(l, x + BUBBLE_PAD_X, y + BUBBLE_PAD_Y + BUBBLE_LINE_H * i + BUBBLE_LINE_H / 2));
       ctx.globalAlpha = 1;
     }
   }

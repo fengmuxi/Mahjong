@@ -7,6 +7,7 @@
  */
 
 const net = require('./utils/net.js');
+const sound = require('./utils/sound.js');
 
 App({
   globalData: {
@@ -26,10 +27,19 @@ App({
     chatUnread: 0,
     /** 当前玩法 id */
     variant: '',
+    /** 音效模块（真机调试：getApp().globalData.sound.debug()） */
+    sound,
   },
 
   onLaunch() {
     net.setStatusHandler(() => {});
+    // 音效全局选项（2026-10-23）：真机 iOS 静音键/听筒路由会让 InnerAudioContext
+    // 静音；单实例的 obeyMuteSwitch 在部分基础库不生效，这里再设一次全局兜底。
+    try {
+      if (wx.setInnerAudioOption) wx.setInnerAudioOption({ obeyMuteSwitch: false });
+    } catch (e) {
+      /* 老基础库 / 非 iOS 忽略 */
+    }
   },
 
   onShow() {

@@ -2850,6 +2850,134 @@ phase 仍是 `playing` → `artKey` 恒为空 → 面板顶部只出文字标题
 ⚠ 上线：重新部署服务端（TILES_VER v4 + UI_VER v13）。小程序代码零改动，
 但会按新 URL 重新下载（`/ui/seat/*` 全部 404，属预期）。
 
+### 10.9.43 背景音乐接入 + 独立开关（2026-10-23 第二十五轮）
+
+用户：「请继续接入背景音乐，并添加开关控制是否播放背景音乐」。
+
+**为什么上轮没接**：§10.9.39 曾判定 `bgm.mp3`（1.0MB，约 65s）不进清单 —— 理由是老机型
+下载慢、容易卡顿。本轮把它作为**唯一的长音频**接入，但用三条约束压住代价：
+按需下载（只有确实开启才建实例）、独立开关（默认开）、独立音量 0.3（不盖过出牌/碰杠胡）。
+
+**服务端**：`SOUND_FILES` 加 `bgm: 'bgm.mp3'`（白名单 → `/api/sound` 8 键、`/sound/bgm.mp3`
+走同一套长缓存 + Range 路由，iOS 播放器要求 206/Content-Length）；`SOUND_VER` v1 → **v3**
+（v2 是 chi 补入时抬的）。启动自检按白名单统计，现为 8/8。
+
+**客户端 `utils/sound.js`**：
+
+| 能力 | 实现 |
+|---|---|
+| 播放实例 | 单例 `bgmCtx`（`loop=true`、`volume=0.3`、`obeyMuteSwitch=false`） |
+| 生命周期 | `bgmStart()` 进局（onShow）· `bgmPause()` 切后台（onHide）· `bgmStop()` 退局销毁（onUnload） |
+| 独立开关 | `setBgmEnabled/toggleBgm/isBgmEnabled`，持久化 **`mj-sound-bgm`**（与音效总开关 `mj-sound-enabled` 解耦） |
+| iOS 解锁 | `unlock()` 末尾调 `bgmStart()`；开关点击也算手势，`onToggleBgm` 开启前先 `unlock()` |
+| 失败处理 | `onError` 只打一条日志 + 销毁置空（下次 onShow 重建），绝不影响对局 |
+| 播完兜底 | `onEnded` 时若仍 wanted 则再 `play()`（`loop` 少数机型不生效） |
+
+**开关语义**：关 → `pause()` **保留实例与进度**（重新打开瞬间续播、不重下 1MB）；
+开 → 立即续播。`bgmWanted` 与 `bgmEnabled` 分开：开关关掉时 onShow 仍置 wanted=true，
+这样在局内重新打开就能立刻响，而不用等下一次进局。
+
+**UI**：右轨（💬 🤖 🎵 🎯 ✕）新增「🎵/🔇」钮，开=金底（复用 `.rail-btn.on`），
+点击 `ui.showToast` 提示「背景音乐已开启/已关闭」。选 rail 而不是新页面：
+全项目没有设置页，rail 里已有 🤖 托管这种状态钮的先例，零新增样式。
+同屏最多 5 个钮，紧凑档 `5×32 + 4×6 = 184px`，仍在中线居中区间内。
+
+验证：`/api/sound` 返回 8 键含 `bgm`；`/sound/bgm.mp3` 200 `audio/mpeg` 1042107B；
+`Range: bytes=0-1023` → 206 + 1024B；`node --check` 通过；WXML 标签配平通过。
+
+⚠ 上线：服务端需重新部署（新增 `public/sound/bgm.mp3` + `SOUND_VER v3`）；
+小程序重新上传。客户端老版本不认识 `bgm` 键，行为不变（仍只播音效）。
+
+### 10.9.44 互动表情面板居中（2026-10-23 第二十六轮）
+
+用户贴截图：「互动中的显示出现异常，请进行居中处理」。
+
+**现象**：面板是 70vw 宽卡片，表情胶囊是可变宽度（文案长度不同），`flex-wrap` 后
+7 个排成 **6 + 1**；容器默认 `justify-content: flex-start` → 第二行单个「比心」顶在最左，
+右侧空出半张卡片，读起来像排版错位。
+
+**根因（顺手查实的隐藏陷阱）**：`.emote-cell` 上写了
+`display:flex; flex-direction:column`，但 `app.wxss` 的
+`button { display: inline-block !important }` 优先级更高，**这三条 flex 声明从未生效** ——
+胶囊实际是 `inline-block`，图标与文案按行内流横排。所以真正的排版单位是
+**每行的容器** `.emote-cells`，居中要加在容器上，不是加在胶囊上。
+
+**改动**（`pages/game/game.wxss`）：
+- `.emote-cells { justify-content: center }` —— 每行居中，末行单个也居中；
+- `.emote-targets { justify-content: center }` —— 目标钮不足一行时不再靠左，
+  免得与下方居中的格子错开；
+- `.emote-group { text-align: center }` —— 分组标题（表情/搞怪）跟着居中，
+  否则居中后标签孤立在左侧；
+- `.emote-cell` 保留原 flex 声明不动（不生效但也不影响），补注释说明 `!important` 覆盖关系，
+  避免后来人误以为竖排失效是 bug。
+
+**验证**：用与紧凑档同规格（44px 高胶囊 / 10px 字 / 8px 间距）的 HTML 复刻做前后对照
+（`.recover-tmp/emote_mock.mjs`），实测换行分布均为 **6+1**，改前首行贴左 + 次行贴左，
+改后两行均居中（截图 `.recover-tmp/emote_before_after.png`）；
+WXSS 注释/花括号配平校验通过（76 对注释、depth 0）。
+
+### 10.9.45 铭牌聊天气泡放大（2026-10-23 第二十七轮）
+
+用户：「局内聊天名牌处显示的气泡对话框显示的太小了用户不好查看，请进行适当的调整」。
+
+**为什么小**：气泡画在 canvas 里，而 canvas 是 **1280×640 逻辑定尺**。手机上它被行高卡宽
+（`canvasW = min(行宽−88, 行高×2)`），实际只缩到 **0.46~0.52 倍** —— 画布里的
+12px 字落到屏幕上是 **5.5~6px**，中文基本糊成一团；桌面宽窗也只是 ~9px。
+
+**调整**（`utils/table.js` 的 `BUBBLE_*` 常量，按 ~1.8 倍整体放大，避免大字号塞小胶囊）：
+
+| 项 | 改前 | 改后 | 屏幕实际（手机 0.46 / 桌面 0.78） |
+|---|---|---|---|
+| 字号（聊天 / 表情） | 12 / 14 | **22 / 26** | 5.5→10.1px / 9.4→17.2px |
+| 行高 | 15 | **30** | — |
+| 最大宽（窄侧 / 宽侧） | 138 / 230 | **240 / 340** | 64→111px / 106→158px |
+| 最多行数 | 3 | **4** | — |
+| 内边距 x,y | 9,6 | **15,11** | — |
+| 圆角 / 尾巴 | 8 / 6·7 | **13 / 9·11** | — |
+| 停留时长 | 4200ms | **5200ms** | 4 行中文才读得完 |
+
+- 内边距、圆角、尾巴、描边（1.5→2）与字号**同比例**，不单独调，否则又是「大字挤小框」。
+- 锚点规则不动：底边两家（slot 0/1）气泡在铭牌**上方**、顶边两家（slot 2/3）在**下方**，
+  尾巴朝铭牌；`x/y` 仍夹在 `[8, W−8]` / `[8, H−8]` 内，长文本不会出画布。
+- 宽侧 340 会轻微压到左右牌河块（x≥906 / ≤374），属**瞬时覆盖**（气泡本就半透明 + 淡出），
+  用「读得清」换一点遮挡，可接受。
+
+**验证**：`.recover-tmp/bubble_shot.mjs` 直接加载 `table.js` 真代码（`lib/shared` 真实模块、
+`tileimg`/`uiart` 空桩），把常量字符串替换回旧值渲一份「改前」，两张 1280×640 画布
+按 **0.46 倍**显示再 2x 截图（`bubble_before_after.png`）——
+改前不可辨、改后 3 行清晰可读，气泡均未溢出画布、未压铭牌。
+
+### 10.9.46 表情胶囊「图标没居中」（2026-10-23 第二十八轮）
+
+用户贴图：「是中间的图标没有居中啊，请进行修改」。
+
+**现象**：每个胶囊里 emoji 比文字高出约 **2.5px**（10px 字高下相当于 1/4 行）。
+上一轮只把**整行**居中了，胶囊**内部**的图标与文案仍不对齐。
+
+**根因**：`app.wxss` 的 `button { display: inline-block !important }` 把 `.emote-cell`
+的 `display: flex` 压掉，图标与文案退化成行内流、按 **baseline** 对齐 ——
+16px 的 emoji 与 10px 的文案共用一个基线，emoji 的视觉中心自然高出半个字。
+
+**修法**（`pages/game/game.wxss`）：
+
+```css
+.emote-cell {
+  display: inline-flex !important;   /* 类选择器优先级 > 元素，能压过 app.wxss 那条 */
+  align-items: center;               /* 图标与文案同一水平中线 */
+  justify-content: center;
+  flex-direction: row;
+  gap: 5rpx;                         /* 间距固定，不再依赖 emoji 字形自带边距 */
+}
+.emote-cell text { vertical-align: middle; }  /* 兜底：万一某些基础库不吃 display 覆盖 */
+```
+
+- `!important` 是必须的：不带它会被 app.wxss 的 `button{display:inline-block!important}` 压回去。
+- 保留 `vertical-align: middle` 作兜底 —— flex 生效时被忽略，不生效时至少不再按基线顶高。
+- §10.9.44 里「保留原 flex 声明不动」的结论**作废**，以本节为准。
+
+**验证**：`.recover-tmp/emote_chip_fix.mjs` 按紧凑档 1:1 渲染两版胶囊并 **用 getBoundingClientRect 量**
+图标/文案的中心线 —— 改前 `delta = -2.5px`（图标偏高）、改后 `delta = 0`（三枚全部归零）。
+
 ### 10.10 待办（按方案仍需处理）
 - [ ] **重新部署服务端**（`wss://majiang.dwzynj.top/ws`）：线上版本落后于仓库，不认识
       `{t:'ping'}`，也还没有 `未知消息：<t>` 的类型回显与「每连接只提示一次」；

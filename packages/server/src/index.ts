@@ -53,10 +53,10 @@ const UI_GROUPS = ['hand', 'operate', 'settle', 'hud', 'bg'] as const;
  */
 const SOUND_DIR = path.resolve(__dirname, '../public/sound');
 /** 音效资源版本号：换了音频就改它，客户端缓存自动失效 */
-const SOUND_VER = process.env.MAHJONG_SOUND_VER || 'v1';
+const SOUND_VER = process.env.MAHJONG_SOUND_VER || 'v3';
 /**
- * 音效键 → 文件名。**白名单**而不是扫目录：源项目还有一个 1MB 的「背景音乐.mp3」，
- * 它既不进清单也不出 CDN（流量大、循环播放耗电），只留在 client/src/assets/sound 备查。
+ * 音效键 → 文件名。**白名单**而不是扫目录，防止误放文件混入清单。
+ * `bgm` 是唯一的 1MB 长音频（约 65s 循环），按需下载；其余为短音效。
  * 键名与小程序 utils/sound.js 的取用键一一对应。
  */
 const SOUND_FILES: Record<string, string> = {
@@ -65,7 +65,9 @@ const SOUND_FILES: Record<string, string> = {
   gang: 'gang.mp3',
   peng: 'peng.mp3',
   hu: 'hu.mp3',
+  chi: 'chi.mp3',
   click: 'click.mp3',
+  bgm: 'bgm.mp3',
 };
 /** 对外 base：留空表示「与接口同源」，由小程序自己拼绝对地址 */
 const CDN_BASE = process.env.MAHJONG_CDN || '';
@@ -1725,17 +1727,55 @@ const server = http.createServer((req, res) => {
     }
 
     // 音效静态资源 `/sound/xxx.mp3`：内容不变，长缓存（换版本走清单里的 version）
+    // 支持 Range + Content-Length（2026-10-23）：真机 InnerAudioContext / iOS 播放器
+    // 对 chunked、无长度的音频兼容性差，部分机型会直接静音或无法 seek。
     if (url.pathname.startsWith('/sound/')) {
       const name = path.basename(decodeURIComponent(url.pathname));
       const file = path.join(SOUND_DIR, name);
-      if (!/^[a-z0-9_]+\.mp3$/.test(name) || !fs.existsSync(file)) {
+      if (!/^[a-z0-9_]+\.mp3$/.test(name) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
         res.writeHead(404).end();
+        return;
+      }
+      const size = fs.statSync(file).size;
+      const cache = 'public, max-age=31536000, immutable';
+      const range = req.headers.range ? String(req.headers.range) : '';
+      const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (range && !m) {
+        res.writeHead(416, { 'content-range': `bytes */${size}` }).end();
+        return;
+      }
+      if (m) {
+        let start = m[1] ? Number(m[1]) : 0;
+        let end = m[2] ? Number(m[2]) : size - 1;
+        if (start > end || start >= size) {
+          res.writeHead(416, { 'content-range': `bytes */${size}` }).end();
+          return;
+        }
+        end = Math.min(end, size - 1);
+        res.writeHead(206, {
+          'content-type': 'audio/mpeg',
+          'accept-ranges': 'bytes',
+          'content-range': `bytes ${start}-${end}/${size}`,
+          'content-length': end - start + 1,
+          'cache-control': cache,
+        });
+        if (req.method === 'HEAD') {
+          res.end();
+          return;
+        }
+        fs.createReadStream(file, { start, end }).pipe(res);
         return;
       }
       res.writeHead(200, {
         'content-type': 'audio/mpeg',
-        'cache-control': 'public, max-age=31536000, immutable',
+        'accept-ranges': 'bytes',
+        'content-length': size,
+        'cache-control': cache,
       });
+      if (req.method === 'HEAD') {
+        res.end();
+        return;
+      }
       fs.createReadStream(file).pipe(res);
       return;
     }
