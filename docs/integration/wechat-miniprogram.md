@@ -3598,7 +3598,57 @@ harness 里把 uiart 桩换成**真实 webp**（data URL 注入），turn=0..3 �
 
 ⚠ 上线：纯小程序渲染层改动，服务端不用动。
 
-### 10.10 待办（按方案仍需处理）
+### 10.9.60 缓存的房间失效：改「提示后回首页」，不再撂人在加入房间表单步（2026-10-24 第四十二轮）
+
+用户：「现在进入房间如果之前缓存的房间信息过期了还是会在加入房间界面，请提示后回到首页」。
+
+**根因**：`room.js` 的回桌失败分支（`autoResume || isFatalRoomError(reason)`）本来就设计了
+「清本地会话 → 回首页提示」，但 home.js 的落地方式是 `onResumeFail` →
+**`goStep('form')` + `showError(reason)`**：步骤条切成加入分支的两步、房间码预填、
+表单底部一行红字。用户既回不到上一步（步骤条第 1 项在加入分支里不存在），
+也没有明确的下一步 —— 只能自己退出重进。
+
+**改法**（`pages/home/home/home.js`，两条入口归一到一个方法）：
+
+| 入口 | 场景 |
+|---|---|
+| `onShow` 消费 `g.resumeFail` | 人原本在对局/大厅页 → `room.js` 先 `wx.reLaunch` 回首页，新页 `onShow` 再消费 |
+| `onResumeFail` 回调 | 人本来就在首页 → `room.js` 直接 `call('onResumeFail', …)` |
+
+两者都走新的 `handleResumeFail(fail)`：
+
+1. **先提示**：`this.toast(reason)` —— 用页面自带的 `.toast`（`ui.showToast`，3s 自动消失），
+   文案直接取服务端原因（`房间已失效，请重新创建或加入房间` / `房间不存在，请检查房间码`）。
+2. **再回首页初始态**：`step:'mode'` + `wizardMode:''` + 清 `errorShown/errorText/focus*`，
+   然后 `renderSteps()`。结果与**全新首页**（`onLoad` 后）逐值一致。
+
+**房间码为什么留着**：`patch.code = fail.room`（6 位校验后大写）—— mode 步不可见，
+但再点「加入房间」时表单直接回填。失效的房间多半**还在**（服务端重启 / 座位被定时回收），
+凭码就能重进，不用重新找朋友要码；走创建分支时 `onPickMode('create')` 会清掉它，不会串味。
+
+**没动的边界（回归要点）**：用户**手动**输入房间码加入失败时（`autoResume=false` 且原因不含「已失效」），
+仍走 `onError` → 表单内红字 + 留在表单步。那是「码填错了」，让人原地改；
+只有「本地缓存的房间已失效」才回首页。
+
+**验证**（`.recover-tmp/_resumefail.mjs`，mock `Page`/`wx`/`getApp` + `new Function` CJS 加载器
+加载**真实** home.js / room.js / store.js / ui.js，net.js 换成可注入消息的假实现）——
+**40 项断言全过**：
+
+```
+A. reLaunch 落地后 onShow 消费 resumeFail        → toast + mode + 步骤条与全新首页一致
+B. room.js 同页回调 onResumeFail                → 同上（原因「房间不存在」也覆盖）
+C. 端到端：首页 onShow → resume → 服务端回失效   → 同上 + 清 token/room + setInRoom(false) + 关 socket + 不 reLaunch
+D. 端到端：对局页收到失效 → reLaunch → 新首页     → reLaunch 目标正确 + resumeFail 带房间码 + 新页同样 toast + mode
+E. 回归：手动加入错误码                          → 仍留表单步 + 红字 + 不弹 toast
+```
+
+> ⚠ 工程根 `package.json` 是 `"type":"module"`，Node 会把小程序目录下的 CJS `.js` 误判成 ESM
+> （`require is not defined in ES module scope`）。 harness 因此用 `new Function('module','exports','require',src)`
+> 自建 CJS 加载器 + mock 注册表替换 `utils/net.js`，而不是改工程配置。
+
+⚠ 上线：纯小程序端改动（`pages/home/home/home.js`），**服务端不用发版**，重新上传小程序即可。
+
+
 - [ ] **重新部署服务端**（`wss://majiang.dwzynj.top/ws`）：线上版本落后于仓库，不认识
       `{t:'ping'}`，也还没有 `未知消息：<t>` 的类型回显与「每连接只提示一次」；
       另需带上 10.9.41/42 的资源分类（UI_VER v13 + TILES_VER v4 + public/{tiles,ui,sound} 目录结构）

@@ -80,21 +80,19 @@ Page({
 
   onShow() {
     room.attach('home', this);
-    // 回桌失败（token 过期 / 座位已回收）：带上房间码落到「加入」表单
+    // 回桌失败（token 过期 / 座位已回收 / 房间已解散）：本地缓存的房间已失效。
+    // 两条入口汇到这里：① reLaunch 落地后由 onShow 消费（人原本在别的页）；
+    // ② 本来就在首页时由 room.js 直接回调 onResumeFail。统一走 handleResumeFail。
     const g = getApp().globalData;
     if (g.resumeFail) {
       const fail = g.resumeFail;
       g.resumeFail = null;
-      const patch = { codeFromLink: false, wizardMode: 'join' };
-      if (fail.room) patch.code = String(fail.room).toUpperCase().slice(0, 6);
-      this.setData(patch);
-      this.goStep('form');
-      this.showError(fail.reason);
+      this.handleResumeFail(fail);
       return;
     }
     // 启动即尝试凭本地 token 回桌（等价 web 端刷新自动重连）
-    if (!room.tryResume()) this.syncNet();
-    else this.syncNet();
+    room.tryResume();
+    this.syncNet();
   },
 
   onHide() {
@@ -270,11 +268,35 @@ Page({
   },
 
   onResumeFail(fail) {
-    const patch = { codeFromLink: false, wizardMode: 'join' };
-    if (fail.room) patch.code = String(fail.room).toUpperCase().slice(0, 6);
+    this.handleResumeFail(fail);
+  },
+
+  /**
+   * 本地缓存的房间已失效（2026-10-24，用户报「过期了还停在加入房间界面」）：
+   *   ① 先 toast 提示服务端给的原因（房间已失效 / 房间不存在…），让人知道为什么被弹回来；
+   *   ② 再把向导重置回**首页初始态**（mode 步）—— 旧行为是落到「加入房间」表单步，
+   *      那里只有一行红字、还预填着一个已失效的房间码，用户既回不去也没有下一步可走。
+   *
+   * 房间码保留在 `data.code`（mode 步不可见）：失效的房间多半还能凭码重进
+   * （服务端重启 / 座位被回收时房间往往还在），再点「加入房间」直接回填，
+   * 不用重新找朋友要码；走创建分支时 `onPickMode` 会清掉它，不会串到创建流程。
+   */
+  handleResumeFail(fail) {
+    const reason = String((fail && fail.reason) || '').trim();
+    const room = String((fail && fail.room) || '').toUpperCase().slice(0, 6);
+    const patch = {
+      step: 'mode',
+      wizardMode: '',
+      codeFromLink: false,
+      errorShown: false,
+      errorText: '',
+      focusName: false,
+      focusCode: false,
+    };
+    if (/^[0-9A-Z]{6}$/.test(room)) patch.code = room;
     this.setData(patch);
-    this.goStep('form');
-    this.showError(fail.reason);
+    this.renderSteps();
+    this.toast(reason || '房间已失效，请重新加入');
   },
 
   onShareAppMessage() {
