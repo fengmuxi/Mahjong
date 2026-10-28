@@ -113,10 +113,6 @@
   border-color: rgba(230, 193, 75, 0.6);
 }
 
-.seat.swappable:active {
-  background: rgba(230, 193, 75, 0.12);
-}
-
 .seat-no {
   font-size: 22rpx;
   color: #9db5a8;

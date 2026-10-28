@@ -99,10 +99,6 @@
   gap: 8rpx;
 }
 
-.mode-card:active {
-  background: rgba(230, 193, 75, 0.12);
-}
-
 .mode-icon {
   font-size: 40rpx;
   color: #e6c14b;

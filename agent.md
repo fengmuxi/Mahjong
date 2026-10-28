@@ -1,13 +1,20 @@
 # docs/guides/agent.md — 麻将（多玩法 · 当前已实现南昌麻将）
 
 > 给 AI agent 的项目指引。读完即可安全改动代码；**改动规则/算分前先读本文「铁律」一节**。
+>
+> ⚠️ **2026-10-24 起：web 客户端（`packages/client`）已在提交 104bfdc 移除**，
+> `npm run build` / `dev:client` 与全部面向网页的脚本一并删除，**微信小程序（`packages/miniapp`）
+> 是唯一对局入口**。下文 §5.5–5.10 仍是 web 客户端时代的细节（DOM 结构 / CSS 选择器 /
+> `client/src/table.ts`），其中的**规则与几何结论大多仍成立**，但文件路径与选择器已失效；
+> 小程序侧对应实现见 `packages/miniapp/miniprogram/utils/table.js` 与
+> `docs/integration/wechat-miniprogram.md` §10.9.x。引用这些章节时先确认路径。
 
 ## 1. 这个项目是什么
 
-一个**网页版麻将**对战游戏：4 人同房间、WebSocket 实时同步、带掷骰翻精/补杠等仪式动画与桌面渲染。单 TypeScript 仓库，无构建框架之外的后端，规则已**冻结**（见 `docs/rules/nanchang.md`）。
+一个**微信小程序麻将**对战游戏：4 人同房间、WebSocket 实时同步、带掷骰翻精/补杠等仪式动画与 Canvas 桌面渲染。单 TypeScript 仓库，规则已**冻结**（见 `docs/rules/nanchang.md`）。
 
-- **多玩法**：架构上按「玩法 = 一份 `RuleSet`」插拔（`packages/shared/src/rules/`），已实现**南昌麻将**；首页第 ① 步从玩法注册表列出可选玩法，创建房间时按 id 选定并整局沿用。
-- 运行模型：一个 Node 进程同时托管①静态前端（`packages/client/dist`）②`/ws` WebSocket 对局服务。4 名玩家各自一个浏览器标签连同一房间码。
+- **多玩法**：架构上按「玩法 = 一份 `RuleSet`」插拔（`packages/shared/src/rules/`），已实现**南昌麻将**；小程序首页第 ① 步从玩法注册表列出可选玩法，创建房间时按 id 选定并整局沿用。
+- 运行模型：一个 Node 进程托管 ①`/ws` WebSocket 对局服务 ②`/api` 牌面与 UI 贴图清单及静态资源；玩家从微信小程序端连同一房间码。
 - 权威来源优先级：**`docs/rules/<玩法>.md`（规则与算分）> `packages/shared`（代码实现）> 前端（仅渲染）**。前端不持有任何规则逻辑。
 
 ## 2. 技术栈
@@ -16,11 +23,11 @@
 |---|---|
 | 语言 | TypeScript（ESM，`"type": "module"`），`tsconfig` 开 `strict` |
 | 服务端运行时 | Node + `ws`（WebSocket），用 `tsx` 直接跑 `.ts`（见 `npm run start`） |
-| 前端 | Vite 5，原生 DOM 渲染（无 React/Vue），`target: ES2022` + `DOM` lib |
-| 共享层 | `packages/shared/src` 被 server & client 共同依赖 |
-| 校验 | `npm run typecheck`（tsc --noEmit）+ `npm run build` + 按规则文档人工复算/试玩（自动化测试已于 2026-10-15 移除） |
+| 前端 | 微信小程序（`packages/miniapp`），原生 Canvas 渲染；web 客户端已于提交 104bfdc 移除 |
+| 共享层 | `packages/shared/src` 被 server 与 miniapp 共同依赖 |
+| 校验 | `npm run typecheck`（tsc --noEmit）+ `npm run build:mp` + 按规则文档人工复算/试玩（自动化测试已于 2026-10-15 移除） |
 
-注意：源码大量使用**带 `.ts` 扩展名的相对导入**（`import ... from './index.ts'`），依赖 `tsconfig` 的 `allowImportingTsExtensions` 与 `tsx`/`vite` 的解析能力；`tsc` 仅做 `--noEmit` 类型检查，不输出。
+注意：源码大量使用**带 `.ts` 扩展名的相对导入**（`import ... from './index.ts'`），依赖 `tsconfig` 的 `allowImportingTsExtensions` 与 `tsx` 的解析能力；`tsc` 仅做 `--noEmit` 类型检查，不输出。
 
 ## 3. 目录结构与职责
 
@@ -40,23 +47,18 @@ packages/
   server/src/
     index.ts             HTTP + WebSocket 入口、房间管理、协议分发、定时器（响应窗口/托管/掷骰仪式）、换位
     game.ts              对局引擎（状态机：行牌/响应窗口/轮庄/流局/结算）
-  client/src/
-    main.ts              WebSocket 连接、入口分步向导（创建/加入 → 玩法 → 表单）、大厅（含换位）/牌桌装配
-    table.ts             牌桌渲染（1280×640 画布、牌墙环、罗盘、赢家标识、结算面板）
-    tileart.ts           牌面美术（68 张 PNG 资源，见 packages/client 下资源）
-    mobile.ts            移动端适配：横屏引导 + 画布尺寸自适应 + 手牌操作条（见 §5.6）
-    style.css            全部样式（含 §5.6 的移动端横屏区段）
-    vite.config.ts       前端构建配置
-scripts/                             开发辅助脚本（截图 / 布局度量 / 移动端交互 / 背景与聊天诊断），非测试门禁
-  mobile_shot.mjs        移动端布局核对：4 种手机视口 + 桌面，度量横向/纵向溢出、画布比例、触控尺寸
-  mobile_interact.mjs    移动端交互核对：点手牌操作条出牌 / 点画布出牌 / 竖屏提示层
-  mobile_orient.mjs      横竖屏专项：能力探测 / 全屏进退与解锁 / 浏览器 UI 遮挡 / 强制横屏 / 静态资源
-  mobile_clip_check.mjs  裁剪审计：标准视口（严格「一屏装下 + 元素不越界」）+ 极端视口（可达性）
-  invite_flow_e2e.mjs    分享链接流程 e2e：预填可改 / 上一步可回退 / 可改走创建 / 改码真的生效
-  mobile_orient_shot.mjs 横竖屏状态截图（竖屏遮罩与原因文案 / 强制横屏首页与对局）
-  gen_icon.mjs           生成应用图标（纯 Node 手写 PNG，供 manifest 安装态使用）
-  chat_e2e.mjs           聊天链路核对
-  bg_*.mjs               背景纹理核对与截图
+  miniapp/miniprogram/      微信小程序端（**当前唯一对局入口**，2026-10-24 起）
+    app.js / app.json       入口与路由（home / lobby / game 三页）
+    utils/table.js          牌桌渲染（1280×640 画布、牌墙环、四向指示键、结算摊牌）
+    utils/tileimg.js        牌面加载（/api/tiles 清单 + CDN，失败静默回退矢量）
+    utils/uiart.js          UI 贴图加载（/api/ui 清单 + CDN，同上）
+    utils/room.js           连接与房间状态机（resume / exit / 心跳）
+    lib/shared/             `npm run build:mp` 产物（CJS），勿手改
+scripts/                             开发辅助脚本，非测试门禁
+  mp_build_shared.mjs       shared → miniprogram/lib/shared（`npm run build:mp`）
+  gen_ui_extra.mjs          增量 UI 贴图：miniapp/assets/ui/<group>/*.png → server/public/ui/，用完抬 UI_VER
+  variant_settle_server.mjs 纯 WebSocket 自动打完一局赣州，验服务端结算窗口
+  verify/                   小程序渲染层 harness：geomcheck / handfit / meldgap / pagelayout / shots_art
 docs/
   README.md                          文档索引与命名规范
   rules/nanchang.md                  南昌规则（v1.19 冻结稿）——实现与验收唯一规则来源
@@ -70,13 +72,10 @@ docs/
 
 ```bash
 npm run dev:server   # tsx watch 跑服务端（改动即重启）
-npm run dev:client   # vite 跑前端（默认 5173，仅开发用；生产由服务端托管 dist）
-npm run build        # vite build 产出 packages/client/dist（服务端静态托管依赖它）
-npm run start        # tsx 跑服务端（PORT 默认 3000；dist 不存在时回提示先 build）
+npm run start        # tsx 跑服务端（PORT 默认 3000）
 npm run typecheck    # tsc --noEmit（strict）
 # 校验（自动化测试已移除，以下为必做）
-npm run typecheck    # tsc --noEmit：改 shared/server/client 后必须零报错
-npm run build        # 改协议/渲染后确认能构建出 dist
+npm run typecheck    # tsc --noEmit：改 shared/server 后必须零报错
 ```
 
 > 改动后至少跑 `typecheck` + `build`；涉及规则/算分的改动，还要按对应 `docs/rules/<玩法>.md` 的表格**人工复算典型行**（见 §5.7）。
@@ -150,15 +149,16 @@ npm run build        # 改协议/渲染后确认能构建出 dist
 另：画布 backing store 按 `devicePixelRatio`（上限 2x）重建，逻辑坐标恒为 1280×640，每帧 `setTransform` 映射——绘制代码不必改。
 
 验证（均需先起服务端，建议 `MAHJONG_CEREMONY=0 MAHJONG_FIXED_SEATS=1`）：
-`node scripts/mobile_shot.mjs`（4 视口 + 桌面布局度量）、`node scripts/mobile_interact.mjs`（点手牌条出牌 / 点画布出牌 / 竖屏提示 / 聊天未读红点）、
-`node scripts/mobile_orient.mjs <局域网IP> <端口>`（能力探测 / 全屏进退 / 遮挡 / 强制横屏 / 静态资源）、
-`node scripts/mobile_clip_check.mjs <端口>`（**改任何尺寸/间距后必跑**：裁剪与越界审计）、
-`node scripts/mobile_exit_btn_check.mjs <端口>`（**改动强制横屏任何浮层后必跑**：首页/大厅/对局 × 宽窄两种横屏，量退出钮的逻辑坐标、有没有压住可点元素、点得动吗；并把躺倒的原始截图转成「未旋转预览」）。
-`node scripts/mobile_orient_shot.mjs`（截图，含真实对局的强制横屏）。
+`node scripts/variant_settle_server.mjs`（纯 WebSocket 自动打完一局，验服务端玩法切换与结算窗口）、
+`node scripts/verify/meldgap.cjs`（副露间距探针，改牌河/副露几何后跑）。
+> ⚠️ 原先的 `mobile_shot` / `mobile_interact` / `mobile_orient` / `mobile_clip_check` /
+> `mobile_exit_btn_check` / `mobile_orient_shot` 已随 web 客户端删除（2026-10-24）——
+> 它们加载的页面不复存在。小程序侧改用 `scripts/verify/*.cjs`（注入真实 `table.js` 到 Chromium）
+> 与 `.recover-tmp/geomshot.mjs`，以及微信开发者工具里的真机预览。
 > ⚠️ 强制横屏下整页被逻辑旋转 90°，`page.screenshot()` 拿到的是**物理竖屏**帧缓冲（图是躺倒的）。
 > 要看「人眼视角」就换成等价的横屏视口，并**临时注入 `html.force-landscape body{transform:none}`** —— 只把旋转抵消掉；
 > **不能摘 `force-landscape` 类**（会把该作用域的规则一起丢掉，预览就假了），也**不能自己 dispatch resize**（`scheduleSync()` 会按 JS 变量把类加回来）。
-> `mobile_exit_btn_check.mjs` 里的 `previewShot()` 就是干这个的，可直接抄。
+> （`mobile_exit_btn_check.mjs` 里的 `previewShot()` 原型已随该脚本删除，2026-10-24；思路是「换等价横屏视口 + 只抵消 transform」，需要时按此重写。）
 > 脚本里访问玩家用**独立 context**（同一 context 的多个标签页共享 localStorage，会互相串 token 导致 join 随机失败）；等就绪要等**脚本生成**的元素（如 `#bg-opts .bg-opt`），`#mode-create` 是静态 HTML、监听器可能还没绑上。
 > 表单 `#code` 上挂有 +30ms 自动聚焦：`fill` 后**必须回读校验**并重试，否则会被聚焦/清空竞态吃掉（表现为「加入房间超时」）。
 
@@ -222,7 +222,7 @@ npm run build        # 改协议/渲染后确认能构建出 dist
 
 1. **先改 `docs/rules/<玩法>.md` 的算分/牌型章节**（南昌 §6.2 算子表；赣州 §6 牌型底分与 §7 结算）。
 2. **同步 shared 实现**：南昌 `score.ts`（`classifyPattern`/`computeSettlement`）；赣州 `gzconfig.ts`（数值）+ `gzwin.ts`/`gzscore.ts`（判定与结算）。
-3. **跑 `npm run typecheck`（零报错）+ `npm run build`**，并按文档表格**人工复算典型行**（见 §8 清单）。
+3. **跑 `npm run typecheck`（零报错）+ `npm run build:mp`**，并按文档表格**人工复算典型行**（见 §8 清单）。
 4. **按玩法实测**：改动涉及翻精/胡型/结算的，起两个浏览器标签按 `docs/integration/ganzhou.md` §6 或 `docs/rules/nanchang.md` §10 的清单走一遍。
 
 > 易错点：只改代码忘了文档 → 下次有人以文档为准反向"修"代码，来回拉扯。改一处须两处同改。
@@ -255,7 +255,7 @@ npm run build        # 改协议/渲染后确认能构建出 dist
 
 ## 8. 验证清单（提交前自检）
 
-- [ ] `npm run typecheck` 无错（strict）；改动协议/渲染层另跑 `npm run build`
+- [ ] `npm run typecheck` 无错（strict）；改动协议/渲染层另跑 `npm run build:mp`
 - [ ] 改了算分/牌型 → 对应 `docs/rules/<玩法>.md` **已同步**，且按其表格人工复算过典型行
 - [ ] 结算守恒：四家 `delta` 之和恒为 0（人工抽查结算面板，勿破坏）
 - [ ] 改动流程/交互 → 至少起两个标签实测一遍（见 `docs/integration/ganzhou.md` §6 清单）
@@ -263,12 +263,12 @@ npm run build        # 改协议/渲染后确认能构建出 dist
 - [ ] 重连：`token` 有效、可 `resume` 回原座位；掉线进入托管不影响对局推进
 - [ ] 换位后 **`binding`/`tokens`/`hostSeat`/`nextDealer` 四者一致**（换位后刷新页面能 resume 回新座位）
 - [ ] 新增玩法：只改 `rules/`（新实现 + 注册一行），**不动 `server/game.ts`**；旧客户端不传 `variant` 仍可正常开局
-- [ ] 改动聊天/互动表情 → 四家视角各看一眼：投掷动画四端都出、气泡挂在正确那家铭牌上、约 4 秒后自动消失、**气泡没有压到手牌/牌墙/牌河**（可用 `scripts/chat_e2e.mjs` 打底，再看截图）
+- [ ] 改动聊天/互动表情 → 四家视角各看一眼：投掷动画四端都出、气泡挂在正确那家铭牌上、约 4 秒后自动消失、**气泡没有压到手牌/牌墙/牌河**（`scripts/chat_e2e.mjs` 已随 web 客户端删除，改用微信开发者工具真机预览 + `scripts/verify/shots_art.cjs`）
 - [ ] 改了赣州报杠（§5.10）→ 展示后三张亮明且打不出、持有者被强制出牌、第 4 张只可胡且自动杠 +2 分、自摸第 4 张自动杠、**冻结期间仍可胡**；南昌无「展示」按钮
 
 ## 9. 不要做的事（常见坑）
 
-- ❌ 把规则/算分逻辑写进 `packages/client`——前端只渲染 `GameView`，所有判定在服务端 + `shared`。
+- ❌ 把规则/算分逻辑写进小程序端（`packages/miniapp`）——前端只渲染 `GameView`，所有判定在服务端 + `shared`。
 - ❌ 改算分倍数/牌型却不改 `docs/rules/<玩法>.md`（见 §6 铁律）。
 - ❌ 把 `Tile` 当字符串或中文处理——全程数字 id 0–33。
 - ❌ "优化"掉掷骰仪式的等待卡点（设计为无点击不自动掷）。
@@ -286,10 +286,11 @@ npm run build        # 改协议/渲染后确认能构建出 dist
 - 算分落地：`packages/shared/src/score.ts`（与 `docs/rules/nanchang.md` §6 对齐）
 - 对局引擎：`packages/server/src/game.ts`
 - 房间/协议/定时器/换位：`packages/server/src/index.ts`
-- 入口流程与大厅换位 UI：`packages/client/src/main.ts`（`renderVariants` / `renderLobby` / `requestSwap`）
+- 入口流程与玩法/大厅 UI：`packages/miniapp/miniprogram/pages/home/`（分步向导）+ `pages/lobby/`（换位）
+- 牌桌渲染：`packages/miniapp/miniprogram/utils/table.js`（web 端 `client/src/table.ts` 的小程序移植版）
 - 规则权威文档：`docs/rules/nanchang.md`
 - 赣州规则：`docs/rules/ganzhou.md`；赣州接入说明：`docs/integration/ganzhou.md`
-- 开发辅助脚本（截图/布局/交互核对）：`scripts/`
+- 开发辅助脚本：`scripts/`（`mp_build_shared` / `gen_ui_extra` / `variant_settle_server` / `verify/*`）
 - 文档索引：`docs/README.md`
 - 多玩法契约（RuleSet 接口）：`packages/shared/src/rules/types.ts`
 - 多玩法注册表：`packages/shared/src/rules/index.ts`（`VARIANTS` / `getRules` / `VARIANT_LIST`）

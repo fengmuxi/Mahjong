@@ -218,6 +218,57 @@ button.danger[disabled] {
   padding: 0 24rpx;
 }
 
+/* ============ 点击反馈（press / hover） ============
+ * 根因：微信小程序里 view 的 :active 在多数基础库版本**不触发**（必须靠 hover-class 才有按下态），
+ *       所以此前 mode-card / tile-btn / seat 的 :active 几乎从未生效 —— 用户才会觉得「点了没反应」。
+ * 方案：
+ *   ① 所有 <button> 自带默认 hover-class="button-hover"，这里集中覆盖配色即可，无需改 wxml；
+ *   ② 所有可点的 <view> 在各页 wxml 显式挂 hover-class（tapped / tapped-lite / tile-tap）；
+ *   ③ 各可点元素在 wxml 把 hover-stay-time 收到 80ms（默认 400ms 太长，松手还亮着像「卡住」），
+ *      hover-start-time 设 20ms（按下几乎立刻亮，不要 50ms 默认延迟）。
+ * 反馈：底色提亮 + 轻微缩放下沉，松手回弹 —— 一眼确认「点到了」。
+ */
+
+/* —— 按钮按下态：压过 .primary/.on/.ghost/.danger 的配色（特异度 0,2,0 > 0,1,1） —— */
+button.button-hover {
+  background: rgba(255, 255, 255, 0.18) !important;
+  transform: scale(0.96) !important;
+  transition: transform 60ms ease-out, background 60ms ease-out;
+}
+button.primary.button-hover,
+button.on.button-hover {
+  background: #f2d266 !important;
+}
+button.danger.button-hover {
+  background: rgba(224, 122, 106, 0.24) !important;
+}
+/* 艺术操作钮（吃/碰/杠/胡/过图）：无底色，纯缩放下沉 + 轻微提亮 */
+.ctrl.art.button-hover {
+  background: transparent !important;
+  transform: scale(0.94) !important;
+  opacity: 0.92;
+}
+
+/* —— 通用卡片按下态（步骤条 / 模式卡 / 玩法卡 / 座位 / 结算入口） —— */
+.tapped {
+  background: rgba(230, 193, 75, 0.16) !important;
+  transform: scale(0.97);
+  transition: transform 60ms ease-out, background 60ms ease-out;
+}
+
+/* 小号深色视图：只提亮、不缩放，避免布局抖动（顶栏返回 ‹） */
+.tapped-lite {
+  background: rgba(255, 255, 255, 0.12) !important;
+  transition: background 60ms ease-out;
+}
+
+/* 手牌牌面（白底不透明）：按下只下沉缩小，不动底色（保留牌面白） */
+.tile-tap {
+  transform: scale(0.94);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+  transition: transform 60ms ease-out, box-shadow 60ms ease-out;
+}
+
 /* ---------- 通用小块 ---------- */
 .badge {
   display: inline-block;

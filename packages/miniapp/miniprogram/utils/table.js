@@ -451,12 +451,15 @@ function projD(y) {
  * 手牌在左右边**单列**铺开（一条直线，和上下两家的单排一致），整列用统一投影比
  * `k = projD(cy)`，列 x 用 `screenToLogicX()` 反算 → 投影后牌同宽同高、列严格竖直。
  * 列内行距取左右两家牌河同款的 `RIVER_LAP_SIDE·k`（叠压），不再留缝。
- * `handX` 是列带左缘。
+ *
+ * ⚠ 列带的**横向位置不在这里定**（2026-10-24 第四十五轮）：原来有个 `handX=138`，
+ * 而副露列已经占到屏幕 168.5 —— 两列重叠 23.7px（左，占牌宽 44%），副露后画，
+ * 结算时整列手牌被压掉一条。现在 x 由 `revealOrigin()` 贴着副露列外缘现算
+ * （见 `meldColumnX()` + `REVEAL_GAP_X`），这里只留竖向中心与投影比。
  */
 const OVER_SIDE = {
   cy: 320,
   k: projD(320),
-  handX: 138,
 };
 
 /** 结算摊牌（自己/对家那一排）的牌张尺寸与步距。
@@ -465,6 +468,11 @@ const OVER_SIDE = {
 const REVEAL_W = 48;
 const REVEAL_H = 60;
 const REVEAL_DX = 52;
+
+/** 副露列离牌河块的间隙（屏幕 px，`drawMelds` 左右两家） */
+const MELD_GAP_X = 6;
+/** 结算摊牌列离副露列的间隙（屏幕 px）—— 副露后画，没间隙就会压住手牌 */
+const REVEAL_GAP_X = 18;
 
 /**
  * 中心盘**四向指示键**（2026-10-24 用户要求：「哪家出牌时激活相应方向的指示器」）。
@@ -488,6 +496,8 @@ const RT_LONG = 116;
 const RT_THICK = 26;
 /** 激活指示条向外探出盘边多少（盘的金边上下有 12px 空缝，探 4 不碰牌河） */
 const RT_OUT = 4;
+/** A 修复（方案③）：副露行左右放宽到「屏幕边 + 此内缩」，容量 1→≈3 组/侧，消除第 3 组起静默丢弃 */
+const EDGE_PAD = 10;
 
 /** 把「投影后的屏幕左缘」反算成 `drawTile` 的逻辑 x（配合 `z.k` 的整块缩放） */
 function screenToLogicX(sxScreen, k) {
@@ -835,8 +845,9 @@ class Table {
   drawTable() {
     const ctx = this.ctx;
     // 2026-10-21：桌面背景优先用 CDN 位图 —— 源项目 liumengniu/majiang 的绿绒龙纹桌
-    // （1280×640 已裁到画布比例并擦掉中心「湖南麻将」字样，见
-    //  packages/client/src/assets/ui/table.png；生成走 `npm run gen:ui-cdn`）。
+    // （1280×640 已裁到画布比例并擦掉中心「湖南麻将」字样；源图在
+    //  packages/miniapp/assets/ui/table.png，生成走 `node scripts/gen_ui_extra.mjs`；
+    //  旧的 packages/client/src/assets/ui/table.png 与该生成器已随提交 104bfdc 删除）。
     // 取不到（清单未就绪 / 部署漏带 public/ui）就回退下面这套藏青+暖金矢量桌：
     // 桌面是纯背景，牌张几何一律走自己的 projQuad，**与这层画什么无关**。
     //
@@ -1018,6 +1029,9 @@ class Table {
     // 2026-10-20 用户决策：**不画牌墙**（`SHOW_WALL=false`）。ghost 与 wallLeft 的记账
     // 在上面已经完成，这里直接收工 —— 省掉的四条 30px 带子全给牌河/副露。
     if (!SHOW_WALL) {
+      // 不画墙也就不画飞牌 ghost：若不清理，每帧入队却永远不被 :1076 的过期过滤回收，
+      // 数组持续膨胀只做无用记账。直接清空（上限 RING_SLOTS 也兜不住逐帧入队）。
+      this.ghosts.length = 0;
       this._wallCache = null;
       this._wallKey = '';
       return;
@@ -1467,11 +1481,20 @@ class Table {
     const visH = this.riverVisH(slot, i, river.length);
     const fh = Math.min(p.h, visH);
     // 2026-10-20：牌面朝向做在贴图里（`rotFace`），**几何占位不变** → 金框照旧贴着矩形画
+    // projQuad 绕矩形中心缩：金框高度用 fh（已收口到露出带），但 y 仍以整张牌 p.y 为基准
+    // → 框整体下移（与 jingBorder 同因，那里显式补了 y）。照 jingBorder 补同一行 y 补偿，
+    // 用整张牌高 p.h 与 tilt.visH 求偏移，把金框收口在露出带上。
+    let gy = p.y - 2;
+    const gh = fh + 4;
+    if (tilt && tilt.visH) {
+      const k = tilt.k || 1;
+      gy += ((p.h - tilt.visH) * (1 - k)) / 2;
+    }
     ctx.save();
     ctx.strokeStyle = '#e6c14b';
     ctx.lineWidth = 2;
     // 金框与牌身同走投影四边形（Lean + 透视 + zw 补偿）
-    quadPath(ctx, projQuad(p.x - 2, p.y - 2, p.w + 4, fh + 4, resolveZone(tilt)), 4);
+    quadPath(ctx, projQuad(p.x - 2, gy, p.w + 4, gh, resolveZone(tilt)), 4);
     ctx.stroke();
     ctx.restore();
     // 弃的是明面精 → 精描边（正精橙 / 副精紫）要在金框**之上**：drawTile 里的精描边先画、
@@ -1875,8 +1898,23 @@ class Table {
     const sh = RIVER_W * k;
     // 与左右两家牌河同款：列内叠压（屏幕行距 21·k），整列竖向居中
     const pitch = RIVER_LAP_SIDE * k;
+    /*
+     * 2026-10-24（第四十五轮，用户报「上下家的副牌显示异常，遮挡手牌」）：
+     * 列 x 原来写死 `OVER_SIDE.handX = 138`，而副露列（`drawMelds` 的 colX）
+     * 已经占到屏幕 168.5 —— 摊牌列 138..192 与副露列 168.5..222.6 **重叠 23.7px**
+     * （右侧 14.9px），且渲染顺序是「先摊牌、后副露」，副露整列压在手牌上。
+     *
+     * 改成**贴着副露列的外缘退一档**：左列 = 副露列左缘 − 间隙 − 列宽，
+     * 右列 = 副露列右缘 + 间隙。两侧间隙恒等（原来左 44% / 右 27% 两道重叠量），
+     * 且与 `drawMelds` 共用 `meldColumnX()` —— 牌河块以后再变形，
+     * 两列也不会重新叠上。间隙取 18：赢家高亮框本身还有 5px 外扩（`drawRevealHand`
+     * 的 PAD），18 能让框与副露列之间仍剩 13px 净空。
+     */
+    const colX = this.meldColumnX(slot);
+    const colR = colX + this.meldMetrics(slot).w * k;
+    const x = slot === 3 ? Math.round(colX - REVEAL_GAP_X - sw) : Math.round(colR + REVEAL_GAP_X);
     return {
-      x: slot === 3 ? OVER_SIDE.handX : W - OVER_SIDE.handX - sw,
+      x,
       y: OVER_SIDE.cy - ((cnt - 1) * pitch + sh) / 2,
       vertical: true,
       dy: pitch,
@@ -1983,6 +2021,23 @@ class Table {
   }
 
   /**
+   * 侧边（slot 1/3）副露列的**屏幕左缘**。
+   *
+   * 左列贴在左牌河块左侧、右列贴在右牌河块右侧，各离块 `MELD_GAP_X`（2026-10-22
+   * 第八轮：不再写死 236/984 —— 牌河块换成整块刚体缩放后近边内收 20~60px，
+   * 写死的锚点会让副露孤零零飘在外侧，用户报「副牌显示还是异常」）。
+   *
+   * 抽成方法是为了让 `revealOrigin()` 复用同一组数：结算摊牌列必须贴着副露列的
+   * 外缘退一档，两边各算一次必然漂 —— 2026-10-24 第四十五轮「副露遮挡手牌」
+   * 就是摊牌列写死 138、副露列已占到 168.5，两列重叠 44% 牌宽。
+   */
+  meldColumnX(slot) {
+    const RB = this.riverBlockRect(slot);
+    const mm = this.meldMetrics(slot);
+    return slot === 3 ? Math.min(RB.l, RB.r) - MELD_GAP_X - mm.w : Math.max(RB.l, RB.r) + MELD_GAP_X;
+  }
+
+  /**
    * 一组副露的统一投影比：取**牌河块中心**的 d。
    *
    * 副露原来是逐张按 `d(y)` 缩的：侧边竖排一列 12 张，y 从 268 到 500 → d 从 0.845 到
@@ -2067,13 +2122,14 @@ class Table {
       // 屏幕左/右两侧的牌河块**恒为 slot 3 / slot 1**（上家/下家），与自己是 slot 0
       // 还是 slot 2 无关 —— 曾写成 `slot === 0 ? 3 : 1`，对家那一侧就取反了，
       // 左右限互换 → 副露一张都放不下（对家整组副露消失）。
-      const leftR = this.riverBlockRect(3);
-      const rightR = this.riverBlockRect(1);
+      // 2026-10-25（存疑项 A，方案③）：侧家牌河块在 y 234..405，自己/对家副露行在
+      // y≈428..491（对家≈164..214），两者 y 不重叠 → 不再被侧块内缘卡宽度，
+      // 直接放宽到屏幕边，容量 1→≈3 组/侧，消除「第 3 组起静默丢弃」的视觉缺口。
       const y = gy;
-      let lx = R.l - 6; // 左半区：往左长（下限 = 左侧牌河块的内缘）
-      let rx = R.r + 6; // 右半区：往右长（上限 = 右侧牌河块的内缘）
-      const lLimit = Math.min(leftR.l, leftR.r);
-      const rLimit = Math.max(rightR.l, rightR.r);
+      let lx = R.l - 6; // 左半区：往左长（下限 = 屏幕左缘内缩）
+      let rx = R.r + 6; // 右半区：往右长（上限 = 屏幕右缘内缩）
+      const lLimit = EDGE_PAD;
+      const rLimit = W - EDGE_PAD;
       for (const g of groups) {
         const w = spanOf(g);
         let x = null;
@@ -2094,14 +2150,12 @@ class Table {
 
     // 左右两家：副露列在牌河块外侧，一组接一组往下排。
     /*
-     * 左右两家的副露列也贴牌河块：左列在左块**左侧**、右列在右块**右侧**，都用
-     * `riverBlockRect` 的屏幕边 + 6px，不再写死 236 / 984（牌河块换成刚体缩放后
-     * 近边内收了，写死的值会离块 60~70px，副露像被甩在外面）。
+     * 左右两家的副露列也贴牌河块：左列在左块**左侧**、右列在右块**右侧**，
+     * 统一走 `meldColumnX()`（屏幕边 + 6px），不再写死 236 / 984。
      * y 仍从 56 往下排（一列放 3 组），因为这些列是「竖带」，高度不受牌河块限制。
      */
+    const colX = this.meldColumnX(slot);
     const RB = this.riverBlockRect(slot);
-    const gapX = 6;
-    const colX = slot === 3 ? Math.min(RB.l, RB.r) - gapX - mm.w : Math.max(RB.l, RB.r) + gapX;
     /*
      * y：以牌河块的**竖向中心**为基准整体居中（2026-10-22 第八轮）。
      * 原来固定从 y=56 往下排，而牌河块叠压后缩到 241..398，副露于是停在块的
@@ -2518,6 +2572,9 @@ class Table {
         seat: a.seat,
         t0: now,
         seq: Number(a.seq) || 0,
+        // 胡牌张（来自 view.log 的 tiles[0]）：自摸=刚摸那张、点炮=打出那张。
+        // 中心动画要标注「胡的是哪张」，其它三家/记录才能知道（见 drawActionFx）。
+        tile: a.tiles && a.tiles.length ? a.tiles[0] : null,
         s0: pose ? pose.scale : 1.55, // 接管起点：无旧动画 = 完整缩放入场
         a0: pose ? pose.alpha : 0,
       };
@@ -2559,6 +2616,10 @@ class Table {
         this.fxSeenSeq = Math.max(this.fxSeenSeq, Number(out[out.length - 1].seq) || 0);
       }
       return out;
+    } else if (!this.fxBootstrapped) {
+      // 新开一局/首次同步时 log 还为空（尚未有任何动作）：先标记已 bootstrap，
+      // 这样首个真实动作抵达时不会被当成历史丢弃 —— 避免开局第一个吃/碰/杠/胡不播中心动画。
+      this.fxBootstrapped = true;
     }
     const la = view && view.lastAction;
     if (la) {
@@ -2635,8 +2696,16 @@ class Table {
        * 但画面只孤零零一个「碰」，没有任何归属信息，看着就像自己那手吃变成了碰。
        * 加一行「下家·碰主昵称」式的归属后，一秒就能确认是不是自己的操作。
        */
-      const cap = fx.kind === 'angang' ? '暗杠' : fx.kind === 'bugang' ? '补杠' : '';
-      const note = [cap, this.fxSeatLabel(fx.seat)].filter(Boolean).join(' · ');
+      const cap =
+        fx.kind === 'angang'
+          ? '暗杠'
+          : fx.kind === 'bugang'
+            ? '补杠'
+            : fx.kind === 'hu' && fx.tile !== null
+              ? `胡 · ${tileName(fx.tile)}`
+              : '';
+      const seatLabel = this.fxSeatLabel(fx.seat);
+      const note = [cap, seatLabel].filter(Boolean).join(' · ');
       if (note) {
         ctx.font = font(24, true);
         ctx.textAlign = 'center';
@@ -2655,7 +2724,7 @@ class Table {
         gang: { label: '杠', color: '#ffb74d' },
         angang: { label: '暗杠', color: '#ffb74d' },
         bugang: { label: '补杠', color: '#ffb74d' },
-        hu: { label: '胡', color: '#ef9a9a' },
+        hu: { label: fx.tile !== null ? `胡·${tileName(fx.tile)}` : '胡', color: '#ef9a9a' },
       };
       const c = conf[fx.kind] || { label: fx.kind, color: '#fff' };
       const w = 120;

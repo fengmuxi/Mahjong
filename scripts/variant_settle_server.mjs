@@ -2,9 +2,16 @@
  * 服务端校验：玩法切换（房主 / 未开局 / 结算窗口 / 清零积分）。
  * 用 4 个裸 WebSocket 客户端自动打完一局赣州（胡牌或流局都会进结算窗口），
  * 以真实结算窗口验证服务端放行与广播。需服务端以 MAHJONG_CEREMONY=0 运行。
- * 用法：node scripts/variant_settle_server.mjs
+ *
+ * 用法：
+ *   node scripts/variant_settle_server.mjs [端口]     # 端口默认 3130（服务端默认值）
+ *   MJ_WS=ws://127.0.0.1:3201/ws node scripts/variant_settle_server.mjs
+ *
+ * ⚠ 2026-10-24：原脚本把地址硬编码成 `ws://127.0.0.1:3000/ws`，而服务端默认端口
+ * 早已是 3130 —— 一运行就 ECONNREFUSED。现改为读参数/环境变量，默认对齐服务端。
  */
-const WS_URL = 'ws://127.0.0.1:3000/ws';
+const WS_URL =
+  process.env.MJ_WS || `ws://127.0.0.1:${Number(process.argv[2] || 3130)}/ws`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function makeClient() {
@@ -62,8 +69,22 @@ const nonHostRejected = errorsAfter(cs[1].msgs, mk).some((r) => r.includes('房�
 // 就绪开局（先不托管，停在庄家第一手，便于做「对局进行中」拒绝用例）
 for (const c of cs) c.send({ t: 'ready', ready: true });
 
+// 赣州 `flow.firstDealerRoll === true`：四人就绪后还要**各掷一次定庄骰**才真正开局
+// （`canStart` 要求 `firstDealerDecided`；南昌东起庄则不需要这一步）。
+// 消息是 `rollDealer`（不是局内的 `rollDice`）；每人一次，4/4 齐了才定庄，
+// 定庄后服务端还有 2600ms 骰子动画延时才进对局，所以等待上限放到 12s。
+for (const c of cs) c.send({ t: 'rollDealer' });
+
 let started = false;
-for (let i = 0; i < 200; i++) { if (last(cs[0].msgs, 'game')?.view?.phase === 'playing') { started = true; break; } await sleep(20); }
+for (let i = 0; i < 600; i++) { if (last(cs[0].msgs, 'game')?.view?.phase === 'playing') { started = true; break; } await sleep(20); }
+if (!started) {
+  console.error('❌ 牌局未进入 playing。诊断：', JSON.stringify({
+    states: cs.map((c) => last(c.msgs, 'state')?.players?.map((p) => ({ seat: p.seat, ready: p.ready, bot: p.isBot })) ?? null),
+    errors: cs.map((c) => errorsAfter(c.msgs, 0)),
+  }, null, 2));
+  for (const c of cs) c.ws.close();
+  process.exit(1);
+}
 
 // 对局进行中切换 → 拒绝（此时牌局停在庄家待出牌，稳定 playing）
 mk = cs[0].msgs.length;

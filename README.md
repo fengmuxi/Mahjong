@@ -53,14 +53,25 @@ docs/
 
 ## 微信小程序端（`packages/miniapp/`）
 
-与 web 端共用 `packages/shared` 与服务端，两端协议一致、可同桌对战。
+复用 `packages/shared` 与服务端，是**目前唯一的对局入口**（web 客户端 `packages/client` 已于提交 104bfdc 移除）。
 
 - **启动与配置说明（先看这个）**：[packages/miniapp/README.md](packages/miniapp/README.md) —— 导入工程、局域网联调、配置项位置、常见报错。
 - **迁移方案与偏离说明**：[integration/wechat-miniprogram.md](integration/wechat-miniprogram.md)。
 
 ## 开发辅助脚本（`scripts/`）
 
-非测试门禁，用于本地核对：移动端布局/交互（`mobile_shot.mjs`、`mobile_interact.mjs`）、聊天链路（`chat_e2e.mjs`）、背景纹理（`bg_*.mjs`）、图片处理（`clean_bg.py`）；小程序资源构建（`mp_prepare_assets.mjs`）、shared 编译入小程序（`mp_build_shared.mjs`）。
+非测试门禁，用于本地核对：
+
+| 脚本 | 作用 |
+|---|---|
+| `mp_build_shared.mjs` | shared 编译入小程序（`npm run build:mp`） |
+| `gen_ui_extra.mjs` | 增量生成 UI 贴图：源 `packages/miniapp/assets/ui/<group>/` → `packages/server/public/ui/`，用完抬 `UI_VER` |
+| `variant_settle_server.mjs` | 纯 WebSocket 自动打完一局赣州，验服务端结算窗口（需 `MAHJONG_CEREMONY=0` 起服务端） |
+| `verify/*.cjs` | 小程序渲染层几何/布局 harness（`geomcheck` / `handfit` / `meldgap` / `pagelayout` / `shots_art`） |
+
+> 2026-10-24 清理：原先面向 web 客户端（`packages/client`）的截图/交互/背景/聊天脚本
+> （`mobile_*` / `bg_*` / `chat_*` / `invite_flow_e2e` / `orient_diag` / `variant_*_e2e` 等）
+> 与三个牌面/UI 资源生成器已随该包一起删除——它们加载的页面已不存在。
 
 ## 校验方式
 
@@ -68,7 +79,6 @@ docs/
 
 ```bash
 npm run typecheck   # tsc --noEmit，必须零报错
-npm run build       # 客户端构建（改协议/渲染层时必跑）
 npm run start       # 起服务端，按规则文档人工验证
 npm run build:mp    # 微信小程序：编译 shared → packages/miniapp/miniprogram/lib/shared
 npm run prepare:mp  # 微信小程序：生成牌面资源（降采样后 ≈0.7MB，入主包 miniprogram/tiles）

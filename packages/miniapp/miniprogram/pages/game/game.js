@@ -91,6 +91,17 @@ const CAPSULE_W = 118;
 const TOPBAR_H = 28;
 
 /**
+ * 侧边轨与微信胶囊之间的最小间隙（px）。轨顶 = 胶囊下沿 + 这个值，见 syncRailTop。
+ * 取 6：胶囊下方还要留出一点呼吸，同时别把本就不多的纵向空间浪费掉。
+ */
+const RAIL_GAP_CAP = 6;
+/**
+ * `getMenuButtonBoundingClientRect()` 不可用 / 返回全 0 时的兜底轨顶（px，相对 game-main）。
+ * 16 ≈ 胶囊最可能伸进 game-main 的深度（iOS 横屏 0 状态栏时约 9~16px）。
+ */
+const RAIL_TOP_FALLBACK = 16;
+
+/**
  * 手牌条的尺寸预算（单位 px，与 game.wxss 的 `.tile-btn` 默认值同一套数值）。
  *
  * 2026-10-21 用户报「手牌为啥还能滑动，直接全部显示不行吗」。
@@ -115,6 +126,22 @@ function boxOf(r) {
   if (!r || !(r.width > 0) || !(r.height > 0)) return null;
   return { left: r.left, top: r.top, width: r.width, height: r.height };
 }
+
+/**
+ * 常规牌局动作的 toast 文案特征 —— 命中就不弹。
+ *
+ * 2026-10-25（用户报「打出提示挡牌桌，能不能移除」）：出牌 / 吃 / 碰 / 杠 / 报杠
+ * 是**每回合都在发生**的常规动作，而牌桌上已经有四处同时表达同一件事：
+ * 牌河与副露、画布中心的贴图动作动画（按 `view.log` 的 seq 排队）、右侧 📋 操作记录、
+ * 以及状态行文案。再叠一层居中大 toast 只是噪音：它 2.5s 盖住牌桌中下部，
+ * 机器人连打时还会自己覆盖自己。
+ *
+ * 服务端 `eventText()` 已同步改成这五种返回 `null`（不再发），
+ * **这条正则只用于兼容还没升级的服务端**（线上 majiang.dwzynj.top 会照发）。
+ * 格式取自服务端：`${风位}·${昵称} 打出|吃|碰|杠|报杠 ${牌名}`。
+ * ⚠ 线上服务端跟上后，这条常量与 onEvent 里的判断可以整块删掉。
+ */
+const PLAY_ACTION_EVENT = /^[^·\s]+·.+?\s(报杠|打出|吃|碰|杠)\s/;
 
 Page({
   data: {
@@ -164,6 +191,10 @@ Page({
     // 一步）。**不用 `scroll-into-view` 固定锚点**——那只有值变化时才生效，写死的 id
     // 在后续追加行时不会再滚一次，表现就是「新记录沉在下面看不见」。
     logScrollTop: 0,
+    // 聊天消息区同理（2026-10-24 修）：原来用的是 `scroll-into-view="chat-end"` 静态锚点，
+    // 正是上面注释说的那个坑 —— 首次渲染滚一次，之后每条新消息都不再滚，全沉在下面看不见。
+    // 改成与记录栏同一套「递增 scroll-top」：值每次都变，必然触发一次夹到底部。
+    chatScrollTop: 0,
     // 任一浮层打开（由 syncModal 统一维护）：原生 canvas 合成层级高于 DOM，
     // 浮层打开期间必须藏掉牌桌画布 —— 见 syncModal 注释
     modalOpen: false,
@@ -172,13 +203,12 @@ Page({
     controlsErrShown: false,
     controlsErrText: '',
     /**
-     * 报杠常驻行（2026-10-23 用户要求）：手牌条正上方一排「报杠」按钮。
-     * 与吃碰杠胡遮罩**分离** —— 报杠不是响应窗口里的选择，而是「手里三张就能报」，
-     * 所以常驻在出牌器顶部，可能同时有多张可报（每个牌面一个钮）。
-     * `declareEnabled` 由服务端按玩法下发（南昌=false 整行不渲染）。
+     * 报杠钮（2026-10-23 用户要求，2026-10-24 并入操作带的同一排）。
+     * 与吃碰杠胡**服务端保证互斥**（`declareOptionsFor()` 要求「自己回合 + 无 pending」），
+     * 但和暗杠/补杠/自摸**可能同时出现**（都是自己回合）—— 所以并排放而不是各占一行。
+     * 可能同时有多张可报 → 一个牌面一个钮；服务端只在玩法支持报杠时才下发 declareOptions。
      */
     declares: [],
-    declareEnabled: false,
     declareBusy: false,
     countdownShown: false,
     countdownText: '',
@@ -228,6 +258,7 @@ Page({
     swapAskShown: false,
     swapAskText: '',
     abortAskShown: false,
+    exitAskShown: false,
     dissolvedShown: false,
     dissolvedTitle: '',
     dissolvedRows: [],
@@ -246,6 +277,12 @@ Page({
     // 顶部安全区（px）：自定义导航栏（navigationStyle=custom）后页面铺满全屏，
     // 顶栏必须自己避开系统状态栏（安卓横屏 ~24px，iOS 横屏 0）。来源同 computeSafeInsets。
     safeT: 0,
+    /**
+     * 侧边轨的起始纵坐标（px，相对 #game-main 顶部）。
+     * 由 syncRailTop() 按微信胶囊实测下沿下发 —— 不用 `top:50%` 垂直居中，
+     * 否则 iPhone 横屏（game-main 仅 215~230px、轨要 222px）时轨顶会钻进胶囊。
+     */
+    railTop: RAIL_TOP_FALLBACK,
   },
 
   // ---------- 生命周期 ----------
@@ -323,6 +360,45 @@ Page({
         this.setData({ safeL: l, safeR: r, safeT: t });
         this.fitCanvas(); // 横向 padding 变了 → 画布可用宽变化，重量一次
       }
+      // 安全区一变，胶囊与 #game-main 的相对关系也会变 → 顺手重定侧轨起点
+      this.syncRailTop();
+    });
+  },
+
+  /**
+   * 侧边轨的起始纵坐标（px，相对 `#game-main` 顶部）→ 写进 data.railTop，
+   * WXML 上以 `style="top: {{railTop}}px"` 消费。
+   *
+   * 2026-10-25 第五十二轮（用户报「对局中时右侧的菜单栏会和顶部的小程序 ui 重叠」）：
+   * `navigationStyle=custom` 下微信胶囊（⋯ ○）由微信自己绘制，纵向跟着状态栏走，
+   * **会伸进 `.game-main` 顶部**。而侧轨原来是 `top:50% + translateY(-50%)` 在整块
+   * game-main 里居中 —— 手机横屏 game-main 只有 215~230px 高、6 个钮的轨却要 222px，
+   * 居中后轨顶必然被顶进胶囊里（实测 iPhone 13 重叠 18px、SE 重叠 25.5px）。
+   *
+   * 现在改成：轨顶 = **胶囊实测下沿 + RAIL_GAP_CAP**，换算到 game-main 坐标系。
+   * 用 `wx.getMenuButtonBoundingClientRect()` 而不是写死数字 —— 胶囊高度/位置
+   * 随平台与状态栏变化，写死必然在某类机型上翻车。
+   * 该接口拿不到（部分环境返回全 0）时退回 RAIL_TOP_FALLBACK，靠 CSS 的
+   * 「装不下就滚」兜底，不再有溢出到胶囊的硬伤。
+   */
+  syncRailTop() {
+    let cap = null;
+    try {
+      cap = wx.getMenuButtonBoundingClientRect ? wx.getMenuButtonBoundingClientRect() : null;
+    } catch (e) {
+      cap = null;
+    }
+    const q = wx.createSelectorQuery();
+    q.select('#game-main').boundingClientRect();
+    q.exec((res) => {
+      const gm = res && res[0];
+      if (!gm || !(gm.height > 0)) return; // 面板打开时可能量到 0，保持原值
+      let top = RAIL_TOP_FALLBACK;
+      if (cap && cap.bottom > 0) {
+        // cap.bottom 是相对窗口顶部的绝对 px；减掉 game-main 的 top 换成局部坐标
+        top = Math.max(RAIL_GAP_CAP, Math.round(cap.bottom + RAIL_GAP_CAP - gm.top));
+      }
+      if (top !== this.data.railTop) this.setData({ railTop: top });
     });
   },
 
@@ -334,7 +410,8 @@ Page({
     this.chatUnread = 0;
     this.emoteTargetSeat = null;
     this.pendingVariant = '';
-    // 操作区高度档位（仪式中 / 结算）—— 档位翻转要重量画布，见 renderGame
+    // 操作区高度档位（结算与否）—— 档位翻转要重量画布，见 renderGame。
+    // 2026-10-24 第五十轮起只剩结算一个档位：操作带恒高（现 34px），按钮显隐不再改行高。
     this.chromeKey = undefined;
     // 操作记录的增量去重键（最后一条的 seq）
     this.logKey = undefined;
@@ -364,6 +441,8 @@ Page({
         self: m.seat === g.mySeat,
       })),
       chatUnread: g.chatUnread || 0,
+      // 历史消息载入即定位到底部（与 onToggleChat 打开时同一手法）
+      chatScrollTop: this.data.chatScrollTop + 2000,
     });
   },
 
@@ -786,6 +865,7 @@ Page({
       this.data.settleShown ||
       this.data.swapAskShown ||
       this.data.abortAskShown ||
+      this.data.exitAskShown ||
       this.data.dissolvedShown
     );
     if (open === this.data.modalOpen) return;
@@ -867,16 +947,11 @@ Page({
     // 没放大」）。只在档位真正翻转的那一帧重量，同档位内的 state 广播不量
     // （SelectorQuery 有开销）。仪式中手牌虽也隐藏，但 `.tray-stack` 的 min-height
     // 仍在占位 → 高度不变 → 不需要重量，故档位只区分结算与否。
-    // 会改变「操作区高度」的东西都进 key：结算相位翻转、报杠行出现/消失。
-    // 行高变了就要重量画布，否则画布会溢出 .canvas-wrap（它是 flex-end 对齐，往上顶）。
-    // 报杠行**只在「本玩法支持报杠 + 手里确实有可报的三张」时出现**（2026-10-23 用户要求），
-    // 其余情况整行不渲染、高度全部还给画布。
-    // 老服务端不下发 declareEnabled → 按开启处理（报杠选项已从吃碰杠胡遮罩移除，
-    // 若这里判成关闭，旧服务端上「报杠」就彻底没有入口了）。
-    const declareOpts = Array.isArray(v.declareOptions) ? v.declareOptions : [];
-    const declareOn =
-      !over && declareOpts.length > 0 && (v.declareEnabled === undefined ? true : !!v.declareEnabled);
-    const chromeKey = `${over ? 'o' : '-'}${declareOn ? '+d' : ''}`;
+    // ⚠ 2026-10-24 第五十轮起，操作带（报杠 + 吃碰杠胡过 + 自摸/暗杠）改成
+    // **恒高 44px 的 .action-bar**，按钮出现/消失不再改变操作区总高
+    // （用户报「按钮把牌面挤变形、牌桌忽大忽小」）—— 所以这里只剩结算相位一个档位，
+    // 不再需要把报杠行的显隐并进 key。
+    const chromeKey = over ? 'o' : '-';
     const chromeChanged = this.chromeKey !== chromeKey;
     this.chromeKey = chromeKey;
     // 听牌提示文案：服务端算好 view.waits（能自摸胡的进张），前端只负责拼字
@@ -903,12 +978,6 @@ Page({
        * 34 张全听显示「听任意一张」；超过 5 张只报张数，免得把小胶囊撑爆。
        */
       waitsText,
-      /**
-       * 报杠行是否渲染（2026-10-23）：本玩法支持报杠 **且** 当前确实有可报的牌面时才为真。
-       * 和 overPhase 同一批 setData —— 它占 28px 高度，必须与 chromeKey 同帧生效，
-       * fitCanvas 才能量到正确行高。
-       */
-      declareEnabled: declareOn,
     };
     // 新一局开始（或换玩法重开）时清掉「本局结算 ▲」——它只属于已结束的那一局
     if (!over && this.data.settleRestoreShown) patch.settleRestoreShown = false;
@@ -980,12 +1049,10 @@ Page({
       } else {
         status = `本局结束：${v.result || ''}`;
       }
-      this.setData({ statusText: status, controls: [] });
+      this.applyControls(status, controls);
       return;
     }
 
-    const awaitingOthers = (v.awaiting || []).filter((s) => s !== v.mySeat).map((s) => this.wind(s));
-    const awaitingAll = (v.awaiting || []).map((s) => this.wind(s));
     const rp = this.ritualPhase(v);
 
     if (rp === 'wait' && v.ceremony) {
@@ -993,7 +1060,7 @@ Page({
       const label = c.kind === 'deal' ? '掷骰开局' : c.kind === 'jing' ? '掷骰翻精' : '掷骰补牌';
       status =
         c.seat === v.mySeat ? `点桌面正中的「${label}」按钮` : `等待${this.wind(c.seat)}家「${label}」…`;
-      this.setData({ statusText: status, controls: [] });
+      this.applyControls(status, controls);
       return;
     }
     if (rp === 'roll' && v.ceremony) {
@@ -1003,14 +1070,14 @@ Page({
           : v.ceremony.kind === 'jing'
             ? '翻精掷骰 → 定位正精中…'
             : '掷骰定位补牌中…';
-      this.setData({ statusText: status, controls: [] });
+      this.applyControls(status, controls);
       return;
     }
 
     if (v.claims) {
-      status = awaitingOthers.length
-        ? `可以操作！还等：${awaitingOthers.join('、')}`
-        : '轮到你选择 — 碰 / 杠 / 吃 / 胡，或点「过」';
+      // 隐私：响应窗口里**不点名**还有谁在考虑 —— 点名会泄露他人的手牌匹配情况
+      // （例如「还等：东、南」等于告诉本家东/南手里有对应牌）。只给本家自己的操作提示。
+      status = '轮到你选择 — 碰 / 杠 / 吃 / 胡，或点「过」';
       for (const opt of v.claims.options) {
         if (opt.kind === 'chi') {
           for (const choice of opt.chiChoices || []) {
@@ -1045,7 +1112,7 @@ Page({
       }
       controls.push({ text: '过', cap: '', act: { t: 'pass' }, ghost: true, art: uiart.urlOf('guo') });
       // 同屏 ≥7 个钮（吃 3 组 + 碰/杠/胡 + 过）时全体缩一号，否则 7×108=756rpx > 750rpx 必换行
-      this.setData({ statusText: status, controls, ctrlCompact: controls.length >= 7 });
+      this.applyControls(status, controls);
       return;
     }
 
@@ -1058,11 +1125,16 @@ Page({
         art: uiart.urlOf('gang'),
       });
     }
-    // 报杠（展示三张）不在这里：2026-10-23 起改为**手牌条上方的常驻行**（见 syncDeclares），
-    // 因为它不依赖响应窗口 —— 自己回合手握三张随时可报，且可能同时有多张。
+    // 报杠（展示三张）不在这里：它有自己的连点锁与校验，由 syncDeclares 单独维护数据、
+    // 渲染时并进 .controls 的同一排（WXML 第一个 wx:for）。它不依赖响应窗口 ——
+    // 自己回合手握三张随时可报，且可能同时有多张。
     if (v.canZimo) {
       const cap = v.zimoLabel ? `自摸·${v.zimoLabel}` : '自摸';
       controls.push({ text: cap, cap, act: { t: 'zimo' }, art: uiart.urlOf('hu') });
+      // 自摸也要给「过」：否则按钮行占着手牌上方的位置，玩家想点牌打出（放弃自摸）
+      // 得先收掉这一排。与响应窗口里的「过」不同 —— 自摸是本家回合、没有待裁决窗口，
+      // 服务端对「自己回合的过」是空操作，这里本地撤掉按钮行即可让手牌恢复可点。
+      controls.push({ text: '过', cap: '', act: { t: 'pass' }, ghost: true, art: uiart.urlOf('guo') });
     }
 
     if (v.canZimo) status = v.zimoLabel ? `可以自摸（${v.zimoLabel}）！` : '可以自摸！';
@@ -1072,14 +1144,39 @@ Page({
           ? `必须先打出 ${v.mustDiscard.map((t) => tileName(t)).join('、')}（他人已展示）`
           : '轮到你了 — 点击手牌打出';
     else if (v.claimWindow)
+      // 隐私：响应窗口只说「有玩家在响应」，不点名是谁 —— 点名会泄露谁手里有对应牌
+      // （例如「等待 东、南 应答」等于把东/南的碰/胡/吃意图提前暴露给打牌人与旁观者）。
       status =
-        (awaitingAll.length ? `等待 ${awaitingAll.join('、')} 应答…` : '等待响应…') +
+        '等待其他玩家响应…' +
         (v.skipRon ? '（你已过水，暂不能点炮胡）' : '');
     else status = `等待${this.wind(v.turn)}家行动…`;
 
     // 同屏 ≥7 个钮（吃 3 组 + 碰/杠/胡 + 过）时全体缩一号，否则 7×108=756rpx > 750rpx 必换行
 
-    this.setData({ statusText: status, controls, ctrlCompact: controls.length >= 7 });
+    this.applyControls(status, controls);
+  },
+
+  /**
+   * 写操作区（状态文案 + 吃碰杠胡按钮）。
+   *
+   * 2026-10-24 第四十九轮（用户报「遮罩盖住手牌影响查看」）：吃碰杠胡从「盖在手牌上的
+   * 半透明遮罩」改成手牌上方的按钮行。
+   * 2026-10-24 第五十轮（用户报「按钮把牌面挤变形、牌桌忽大忽小」）：那一行又改成
+   * **恒高 44px 的 .action-bar**，按钮 absolute 浮在里面 —— 出现/消失**不再改变
+   * 操作区总高**，画布永远按同一个行高定尺。所以这里的 fitCanvas 只剩**兜底**职责：
+   * 正常路径下高度没变、patch 为空、跑一圈自然终止；万一将来按钮折行（.controls 的
+   * flex-wrap 保险丝）真的改了行高，这一枪还能把画布拉回来。
+   *
+   * 为什么要包一层：renderControls 有 4 个早退分支（结算 / 掷骰等待 / 掷骰中 /
+   * 响应窗口），每个都要写 controls。收敛到这一个入口，compact 的计算与兜底就不可能漏。
+   *
+   * compact 按**总钮数**（吃碰杠胡 + 报杠）算：报杠已并入同一排（见 syncDeclares），
+   * 只数 controls 会在「4 报杠 + 3 暗杠」这种 7 钮场景漏缩号，一排排不下。
+   */
+  applyControls(status, controls) {
+    const declares = this.data.declares || [];
+    const compact = controls.length + declares.length >= 7;
+    this.setData({ statusText: status, controls, ctrlCompact: compact });
   },
 
   /**
@@ -1113,19 +1210,21 @@ Page({
   },
 
   /**
-   * 报杠常驻行（2026-10-23）。
+   * 报杠钮集合（2026-10-23 起，2026-10-24 并入操作带的同一排）。
    *
-   * 为什么独立于 `controls`：报杠不是「响应窗口里的选择」，而是自己回合手握三张就能做的事，
-   * 且**可能同时有多张**可报（每个牌面一枚钮）—— 混进吃碰杠胡遮罩会挤成一排、还会被
-   * 遮罩盖住。这里单独渲染成手牌条上方的一行，行高固定（空着也占位），避免画布被反复顶动。
+   * 为什么仍是独立的数据位、而不是塞进 `controls`：二者的**交互语义不同** ——
+   * 报杠有自己的连点锁（`declareBusy` + 2.5s 定时器）和更严的发送前校验，
+   * 而 `controls` 走 `lockControls()` 全家禁用。合成一列按钮、各保留各的锁最省事。
    *
-   * 只在 `declareEnabled`（玩法开启报杠，服务端下发）时渲染整行；南昌等玩法零成本。
-   * 选项随 `view.declareOptions` 变（自己回合 + 恰好三张 + 未被挂起），其余时候整行显示
-   * 一个 disabled 的「报杠」占位钮 —— 常驻但不误导。
+   * 渲染位置：`renderControls` 旁边的 `.controls` 里（WXML 第二个 wx:for），
+   * 与吃碰杠胡并排。服务端保证二者互斥（`declareOptionsFor()` 要求「自己回合 + 无 pending」），
+   * 但报杠与暗杠/补杠/自摸**可能同时出现**（都是自己回合）—— 这正是并排放的原因。
+   *
+   * 选项随 `view.declareOptions` 变（自己回合 + 恰好三张 + 未被挂起）；
+   * 服务端只在玩法支持报杠时才下发，南昌等玩法恒为空 → 一个钮都不渲染。
    */
   syncDeclares(v) {
-    // 整行显隐由 renderGame 写 data.declareEnabled（支持报杠的玩法 + 确实有可报牌面），
-    // 这里只负责「这一行里有哪些钮」。南昌等玩法的 declareOptions 恒为空 → 列表空 → 行不渲染。
+    // 这里只负责「这一排里有哪些报杠钮」。南昌等玩法的 declareOptions 恒为空 → 列表空 → 不渲染。
     const on = !!v && v.phase === 'playing';
     const list = on ? (v.declareOptions || []).map((t) => ({ tile: t, name: tileName(t) })) : [];
     const prev = this.data.declares || [];
@@ -1166,6 +1265,14 @@ Page({
     const idx = Number(e.currentTarget.dataset.idx);
     const item = this.data.controls[idx];
     if (!item || item.disabled) return;
+    // 自摸「过」：本家回合、没有待裁决窗口，服务端对「自己回合的过」是空操作；
+    // 这里本地撤掉按钮行，让手牌恢复可点（放弃自摸）。响应窗口里的「过」走下方常规分支。
+    // 必须走 applyControls —— 行从「有」变「无」会还一截高度给画布，要重量（见 applyControls）。
+    if (item.act.t === 'pass' && (!this.view || !this.view.claims)) {
+      room.send({ t: 'pass' });
+      this.applyControls(this.data.statusText, []);
+      return;
+    }
     // 诊断（2026-10-23）：与 table.js 的 `[fx]` 日志一对，排查「点了吃却播碰」这类不对应
     try {
       console.info(`[ctl] ${item.act.t}${item.act.kind ? ':' + item.act.kind : ''} idx=${idx}/${this.data.controls.length}`);
@@ -1425,6 +1532,8 @@ Page({
       patch.chatUnread = 0;
       patch.quickShown = false;
       patch.emojiShown = false;
+      // 打开就落到最新一条（历史消息可能已有几十条，不滚就等于停在顶部看最早几条）
+      patch.chatScrollTop = this.data.chatScrollTop + 2000;
       getApp().globalData.chatUnread = 0;
     }
     this.setData(patch);
@@ -1469,7 +1578,11 @@ Page({
     const g = getApp().globalData;
     const list = this.data.chatMsgs.concat([{ seat: msg.seat, name: msg.name, text: msg.text, self: msg.seat === g.mySeat }]);
     if (list.length > CHAT_MAX) list.shift();
-    const patch = { chatMsgs: list };
+    const patch = {
+      chatMsgs: list,
+      // 递增 scroll-top → 触底跟随最新一条（与 renderLog 的 logScrollTop 同一手法）
+      chatScrollTop: this.data.chatScrollTop + 2000,
+    };
     // 未读只在「聊天面板没打开」时累加（打开时就在眼前，无需红点）
     if (msg.seat !== g.mySeat && !this.data.chatOpen) {
       const unread = Math.min((this.data.chatUnread || 0) + 1, 999);
@@ -1649,16 +1762,26 @@ Page({
       artKey = v.winner === null || v.winner === undefined ? 'draw' : v.winner === mySeat ? 'win' : 'lost';
     }
     this.settleArtKey = artKey;
+    // 默认**不**直接弹结算面板：牌桌保留亮牌（谁胡了、亮出各家手牌一目了然），
+    // 状态行右侧挂「本局结算 ▲」入口 —— 玩家想看明细再自己点开。
+    // 这样一胡牌不会突兀地盖住牌桌，也避免「不知道谁胡了 / 发生了什么」。
+    // （此状态与「最小化」结算后的状态一致，onSettleRestore / onSettleHide 可正常来回切。）
+    // 胡牌张标注（结算面板）：自摸=摸到的那张、点炮=打出那张。流局/旧服务端无该字段 → 空串不渲染。
+    const settleWinTile =
+      m.winTile !== undefined && m.winTile !== null
+        ? `胡牌张：${tileName(m.winTile)}${m.winVia === 'zimo' ? '（自摸）' : m.winVia === 'ron' ? '（点炮）' : ''}`
+        : '';
     this.setData({
-      settleShown: true,
-      modalOpen: true,
+      settleShown: false,
+      modalOpen: false,
       settleTitle: m.title,
+      settleWinTile,
       settleArt: artKey ? uiart.urlOf(artKey) : '',
       settleHead: head,
       settleRows: rows,
       settleNotes: m.notes || [],
       settleTotals: `累计子：${totalsText}`,
-      settleRestoreShown: false,
+      settleRestoreShown: true,
       settleNextDisabled: false,
     });
   },
@@ -1691,8 +1814,21 @@ Page({
 
   // ---------- 其它 ----------
 
+  /**
+   * 事件 toast（服务端 `{t:'event', text}`）。
+   *
+   * 2026-10-25（用户报「打出提示挡牌桌，能不能移除」）：**常规牌局动作不再弹**。
+   * 主修在服务端（`eventText()` 对 discard/chi/peng/gang/declare 返回 null）；
+   * 这里多做一道 `PLAY_ACTION_EVENT` 过滤，是为了让**还没升级的线上服务端**
+   * 也立刻安静下来 —— 牌桌本身已经把这几件事表达清楚了（见常量处的注释）。
+   *
+   * 保留：房间级事件（加入 / 掉线 / 托管 / 换位 / 准备 / 解散）、掷骰与翻精。
+   */
   onEvent(msg) {
-    ui.showToast(this, msg.text, 2500);
+    const text = (msg && msg.text) || '';
+    if (!text) return;
+    if (PLAY_ACTION_EVENT.test(text)) return;
+    ui.showToast(this, text, 2500);
   },
 
   /**
@@ -1788,6 +1924,34 @@ Page({
     }
     room.send({ t: 'abort' });
     ui.showToast(this, '本局已解散，正在返回房间…', 1500);
+  },
+
+  /**
+   * 局内退出（任意玩家，非房主专属）：开页内确认浮层。
+   * 与 onAbort 同构（页内浮层而非 wx.showModal，原生模态框在该环境下回调不达）。
+   * 提示文案明确「座位交托管打完本局」——与用户要求的「托管保证本局正常结束」语义一致。
+   */
+  onExit() {
+    this.setData({ exitAskShown: true });
+    this.syncModal();
+  },
+
+  /**
+   * 确认退出：仅发 `exit` 让服务端把座位交托管；本端清房间态、回首页。
+   * 服务端收到 exit 后：对局中 → 座位托管至本局结束再回收；非对局中 → 立即移除。
+   * 导航回首页由本端负责（与 lobby.onLeaveConfirm 同构：room 只管清态，页面管跳）。
+   */
+  onExitConfirm(e) {
+    const accept = e.currentTarget.dataset.accept === '1';
+    this.setData({ exitAskShown: false });
+    this.syncModal();
+    if (!accept) return;
+    if (!net.isOpen()) {
+      ui.showToast(this, '连接已断开，无法退出：请返回首页重连', 3000);
+      return;
+    }
+    room.exitGame();
+    wx.reLaunch({ url: '/pages/home/home' });
   },
 
   onShareAppMessage() {

@@ -59,10 +59,14 @@ Page({
   },
 
   onHide() {
+    // 定庄掷骰动画有 100ms 轮询 + 1200/2600ms 定时器，页面离开必须一并清掉，
+    // 否则它们会继续对已销毁的页面 setData（控制台刷警告，且与新页面抢数据）。
+    this.clearDice();
     room.detach(this);
   },
 
   onUnload() {
+    this.clearDice();
     room.detach(this);
   },
 
@@ -366,7 +370,9 @@ Page({
   onSeatKick(e) {
     const seat = Number(e.currentTarget.dataset.seat);
     if (!Number.isInteger(seat)) return;
-    if (e.currentTarget.dataset.bot) room.send({ t: 'removeBot', seat });
+    // dataset 约定统一用字符串 '1'/'0'：布尔直接写 {{item.bot}} 会被基础库落成字符串 "false"，
+    // 届时 `if (dataset.bot)` 恒真 → 对真人发 removeBot → 真人永远踢不掉。
+    if (e.currentTarget.dataset.bot === '1') room.send({ t: 'removeBot', seat });
     else room.send({ t: 'kick', seat });
   },
 

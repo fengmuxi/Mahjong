@@ -46,7 +46,8 @@
 
 ### 1.4 构建与运行方式
 
-`npm run build`（vite → `packages/client/dist`）→ `npm run start` 起 Node 进程托管。WebSocket 协议为 JSON、`t` 字段区分（`shared/src/index.ts` 的 `ClientMsg`/`ServerMsg`），**协议与端无关**——这是双端互通的基础。
+`npm run start` 起 Node 进程托管（web 客户端 `packages/client` 已在提交 104bfdc 移除，
+对局入口只有微信小程序）。WebSocket 协议为 JSON、`t` 字段区分（`shared/src/index.ts` 的 `ClientMsg`/`ServerMsg`），**协议与端无关**——这是双端互通的基础。
 
 ---
 
@@ -177,7 +178,8 @@ packages/miniapp/       ← 新增：原生小程序工程
 - 结算面板（南昌 9 列 + 赣州 11 列逐家明细）、解散/换位/玩法切换确认弹窗、toast。
 - 样式：`style.css` → WXSS，`rem/vw` → `rpx`，`@media` → 宽度判断或极简保留，`env(safe-area)` → `wx.getSystemInfoSync().safeArea` 折算。
 - 分享：`onShareAppMessage` 路径 `/pages/game/game?room=CODE`（等价现有 `?room=` 预填，**预填但可改**的语义不变）+ `onShareTimeline`。
-- 验收：`scripts/invite_flow_e2e.mjs` 的小程序等价路径（预填可改/上一步可回退/改码生效）+ 两真机同桌全流程。
+- 验收：分享卡片 `?room=` 预填可改 / 上一步可回退 / 改码真的生效 + 两真机同桌全流程
+  （`scripts/invite_flow_e2e.mjs` 已随 web 客户端删除，2026-10-24，改人工走查）。
 
 ### P4 — 平台体验适配（≈4 人日）
 - 全部页面 `pageOrientation: landscape`，删除横屏兜底全家（`#force-exit`/`#rotate-hint`/强制横屏 CSS）。
@@ -268,7 +270,7 @@ packages/miniapp/       ← 新增：原生小程序工程
 - [ ] 复用现有验收清单：南昌 `docs/rules/nanchang.md` §10、赣州 `docs/integration/ganzhou.md` §6
 - [ ] 断线重连 / 掉线托管 / 换位后 `binding/tokens/hostSeat/nextDealer` 一致（服务端逻辑未动，重点验小程序客户端）
 - [ ] 翻精前不剧透、等待掷骰不自动掷（服务端原逻辑，客户端移植后回归）
-- [ ] 分享卡片路径 `?room=` 预填可改、步骤条可回退（对照 `scripts/invite_flow_e2e.mjs` 的等价路径）
+- [ ] 分享卡片路径 `?room=` 预填可改、步骤条可回退（原 `scripts/invite_flow_e2e.mjs` 已随 web 客户端删除，人工走查）
 - [ ] 隐私协议弹窗、openid/token 用途声明；名称无通用词；无诱导分享文案
 - [ ] iOS / Android 双真机 + 低端机型体验分屏矩阵
 
@@ -946,14 +948,16 @@ IDE 无头 compile `{"status":0}`；另用 Playwright 把真实 `drawTile()` 在
 | `GET /api/ui` | UI 贴图清单 `{ version, base, images: { back:'back.webp', … } }`（2026-10-21，键名见 `utils/uiart.js`） |
 | `GET /ui/<key>.webp` | 同上静态图，长缓存 |
 
-- 资源目录 `packages/server/public/tiles/`，由 `npm run build:cdn-tiles`
-  （`scripts/gen_cdn_tiles.mjs`）从 `packages/client/src/assets/tiles` 降采样生成。
+- 资源目录 `packages/server/public/tiles/`（34 立牌 + `face/` 4 张平放牌图集）。
+  ⚠ 源图在 `packages/client/src/assets/tiles`，随该包于提交 104bfdc 删除，
+  `gen_cdn_tiles.mjs` 也已删除 —— **现有 webp 是唯一副本，勿删勿改**（详见 `packages/server/public/README.md`）。
 - **格式与尺寸**：139×202 **WebP q=0.92，34 张共 165KB**（同尺寸 PNG 是 1.9MB+）。
   139×202 的依据是手牌条 46×60 在 DPR 3 真机上需要 138×180 物理像素。
 - **2026-10-21 换美术**：34 张源图换成 liumengniu/majiang（MIT）的 27 张序数牌
   + 同风格补绘的 7 张字牌（该仓库无字牌），`TILES_VER` v1→v2；详见 §10.9.15。
 - UI 贴图（牌背/操作钮/结算艺术字/庄标/大数字）走平行的 `public/ui/` 通道，
-  由 `npm run gen:ui-cdn` 生成，`utils/uiart.js` 消费；同样不进代码包。
+  由 `node scripts/gen_ui_extra.mjs` 从 `packages/miniapp/assets/ui/<group>/*.png` 生成，
+  `utils/uiart.js` 消费；同样不进代码包。
 - 环境变量：`MAHJONG_CDN`（独立 CDN 域名，空 = 与接口同源）、`MAHJONG_TILES_VER`（换美术抬它）、
   `MAHJONG_UI_VER`（UI 换图抬它，与牌面分开 → UI 换图不让客户端重下 34 张牌面）。
 - 生成脚本用无头 Chromium 缩放 + 编码（`toDataURL('image/webp')`）：仓库没有 sharp/jimp
@@ -1428,8 +1432,8 @@ ctx 传给 `paintTileBack` → **崩在整帧第一张牌**，于是「啥都显
 
 **排查顺序**：
 
-1. `curl <host>/api/tiles` 必须返回 34 项；少于 34 → 服务端没发布素材（`npm run build:cdn-tiles`）
-   或部署漏带目录。
+1. `curl <host>/api/tiles` 必须返回 34 项；少于 34 → 部署漏带 `public/tiles`
+   （生成器已随 `packages/client` 删除，无法本地重建，只能从 git 历史恢复源图）。
 2. 小程序后台登记 **request 合法域名**（拿清单）与 **downloadFile 合法域名**（图片下载），
    开发者工具里也可临时勾「不校验合法域名」。
 3. 本地开发不想连线上：`wx.setStorageSync('mj-wss', 'ws://<局域网IP>:3130/ws')` —— `resolveApi()`
@@ -3648,6 +3652,475 @@ E. 回归：手动加入错误码                          → 仍留表单步 +
 
 ⚠ 上线：纯小程序端改动（`pages/home/home/home.js`），**服务端不用发版**，重新上传小程序即可。
 
+### 10.9.61 结算相位副露遮挡手牌：摊牌列改贴副露列外缘（2026-10-24 第四十五轮）
+
+用户贴了一张真机结算截图：「上下家的副牌显示异常都遮挡手牌了请进行修复」。
+现象是结算相位左右两家（上家 slot 3 / 下家 slot 1）的**副露整列压在自己的摊牌手牌上**，
+每条手牌被啃掉一条（左侧约 44% 牌宽、右侧约 27%）。
+
+**根因**（两处独立缺陷叠加）：
+
+1. **摊牌列横向位置写死**。`OVER_SIDE.handX = 138` 是 2026-10-23 加竖带时定下的，
+   而同轮之后（第八轮）副露列改成了「贴着牌河块外缘」的 `colX`，已经占到屏幕 **168.5**。
+   于是摊牌列 138..192 与副露列 168.5..222.6 **重叠 23.7px**（右侧 14.9px）。
+2. **渲染顺序不利**。`render()` 里 `drawRevealHand` 先画、`drawMelds` 后画 ——
+   重叠部分永远由副露盖住手牌，看着就是「副牌咬住了手牌」。
+
+**改法**（`packages/miniapp/miniprogram/utils/table.js`，三处）：
+
+| 改动 | 内容 |
+|---|---|
+| `OVER_SIDE` 瘦身 | 删掉 `handX`，只留竖向中心 `cy: 320` 与投影比 `k: projD(320)`；JSDoc 注明横向位置改由 `revealOrigin()` 现算 |
+| 新增 `meldColumnX(slot)` | 侧边副露列的**屏幕左缘**：左列 = 左牌河块内缘 − `MELD_GAP_X`(6) − 列宽，右列 = 右牌河块外缘 + 6 |
+| `revealOrigin()` 侧边分支 | `x` 改为贴着副露列**外缘**退 `REVEAL_GAP_X`(18)：左列 = `colX − 18 − 列宽`，右列 = `colR + 18` |
+| `drawMelds()` 左右分支 | 内联的 `Math.min(RB.l,RB.r) - 6 - mm.w` / `Math.max(RB.l,RB.r) + 6` 换成共用 `this.meldColumnX(slot)`（`RB` 后面算 `cy` 还要用，需保留） |
+
+**为什么抽成方法**：摊牌列与副露列必须**严格相对**，各算一次必然漂 —— 本轮 bug 正是
+「一边写死、一边改了锚点」。合成一处后，牌河块以后再变形（放大/改格），两列也不会重新叠上。
+
+**间隙取 18 的理由**：赢家高亮框本身有 5px 外扩（`drawRevealHand` 的 `PAD`）。
+取 18 能让**高亮框与副露列之间仍剩 13px 净空**，金框只包手牌、不蹭副露。
+
+**修复后数值**（`geomshot.mjs` 实测，屏幕 px）：
+
+| 侧 | 摊牌列 | 副露列 | 净空 |
+|---|---|---|---|
+| slot 3（上家，左） | 96..150.2 | 168.5..222.6 | 18.3 |
+| slot 1（下家，右） | 1121..1175.2 | 1048.5..1102.7 | 18.3 |
+
+两侧对称（原来左 44% / 右 27% 两道重叠量，现在恒等），且都在画布内。
+
+**验证**：
+
+- `geomshot.mjs` 新增 6 项断言（摊牌列不压副露列且净空 ≥12px、在画布内、高亮框 +5px 后仍 ≥6px，
+  左右各一组）→ **35 项全过**；`meld` 锚点也改成读 `table.meldColumnX()`，与生产代码同源。
+- `_winshot.mjs`（`geomshot` 的 `winner: 3` 变体）渲染「赢家在上家」的结算图：
+  金色高亮框只包 slot 1 的摊牌列，与副露列之间有 13px 净空，视觉确认通过。
+- `_probe_over.mjs`：用 `new Function` CJS 加载器加载**真实** `table.js`，
+  直接打印 `riverBlockRect` / `meldMetrics` / `revealOrigin` 的屏幕矩形并算重叠量
+  （⚠ 不能调 `render()`，会 `Cannot read properties of undefined (reading 'slice')`；
+  这些几何方法只依赖 frame 与常量）。
+
+⚠ 上线：纯小程序渲染层改动（`utils/table.js`），**服务端不用动**，重新上传小程序即可。
+
+
+### 10.9.62 局内「操作记录 / 聊天」面板无法滚动（2026-10-24 第四十八轮）
+
+用户报「局内的操作记录和聊天信息无法滚动显示」。两个侧边弹层面板（`.side-panel` →
+`.panel-card` → `scroll-view`）里的记录/消息**划不动**，内容多的部分被卡片自身的
+`overflow: hidden` 切掉，永远看不到。
+
+**根因**（两处独立缺陷，一个面板各占一样）：
+
+1. **卡片高度是一条「不确定高度链」**（影响两个面板）。
+   `.panel-card` 原来只有 `max-height: 100%`：
+   `.side-panel`（`absolute; inset:0`）→ `.panel-card`（`max-height:%`）→ `.panel-body`（`flex:1`）。
+   `flex: 1` 的 scroll-view 要算「剩余空间」，前提是父高确定；父高靠百分比 `max-height`
+   反推时，**微信渲染器推不出来**，scroll-view 就退化成「内容多高就多高」→ 永不溢出、
+   划不动，卡片再把多出来的部分切掉。
+   > ⚠ 证据等级要说清：这一条**本地无法复现**。Chromium 能把百分比 `max-height` 反推出确定高
+   > （`scripts/verify/panelscroll_before.cjs` 量过：旧写法在 Chromium 里照样溢出 305/556px），
+   >   所以它是**推断**而非实测。但改成 `height: 100%` 后整条链与百分比彻底无关、高度由构造
+   >   确定，是严格更强的写法，且与本仓库既有约定一致 —— **所有能滚的竖向 scroll-view**
+   >   （`.settle-body` 52vh / `.emote-grid` 320rpx / `.chat-pop` 200rpx / `.feed` 240rpx）
+   >   **都是把高度直接写在 scroll-view 自己身上，没有一个是靠 flex 推的**。
+
+2. **`.chat-log` 上挂着一条 300rpx 小帽子**（只影响聊天）。
+   那是「流内右列」时代的遗物：弹层面板里它把消息区压到 **156px**（300rpx × 0.52），
+   卡片 376px 高、下半全空着。已删。
+
+3. **聊天不跟随最新消息**（只影响聊天）。
+   `scroll-into-view="chat-end"` 是**静态锚点** —— 值不变化就不再触发。
+   `game.js` 的注释里早就写过这条坑（记录栏因此改成了 `scroll-top` 递增），
+   但聊天面板还在用静态锚点：第一条消息滚过一次，之后每条新消息都不再滚，全沉在可视区外。
+
+**改法**：
+
+| 文件 | 改动 |
+|---|---|
+| `game.wxss` `.panel-card` | `max-height: 100%` → `height: 100%; max-height: 100%`（卡片定高，`flex:1` 才有确定剩余空间） |
+| `game.wxss` `.side-panel` | 补 `padding: 8rpx` —— 卡片改成 `height:100%` 后没有这圈 padding 会把整块 Dim 完全挡住，看着不像弹层而像换了个页面 |
+| `game.wxss` `.chat-log / .log-list` | 删掉 `max-height: 300rpx`；紧凑 media 块里的 `max-height: none` 一并删（冗余） |
+| `game.wxss` `.chat-pop` | 补 `flex-shrink: 0`（不被 flex 压缩，压扁了就没法看/没法点） |
+| `game.wxss` `.chat-input-row` | 补 `flex-shrink: 0`（同上） |
+| `game.wxml` 聊天 scroll-view | `scroll-into-view="chat-end"` → `scroll-top="{{chatScrollTop}}"`，删掉 `<view id="chat-end">` 锚点 |
+| `game.js` | 新增数据位 `chatScrollTop`，在 `onLoad`（历史消息）、`onToggleChat`（开面板）、`onChat`（新消息）三处 `+2000` 递增 |
+
+`scroll-top` 递增法的可靠性：每次 `+2000` 超出最大滚动量时自动夹到底部，是跟随最新内容的可靠手法
+（记录栏 `logScrollTop` 2026-10-22 起就这么用）。
+
+**验证**：
+
+- `scripts/verify/panelscroll.cjs`（新建）：用 `_pw.cjs` 的 `loadPlaywright` 把**真**
+  `game.wxss` 转成 CSS（去注释、rpx 按 390/750 换算、去 `page{}`），复刻
+  `.game > .game-main > .side-panel > .panel-card` 结构，在 Chromium 里量 `scrollHeight - clientHeight`。
+  13 项断言全过：卡片定高 375.7px、`.panel-body` 溢出 303px、`.chat-log` 溢出 442px、
+  `flex` 计算值 `1 1 0%`、`max-height: none`、两行 `flex-shrink: 0`；
+  少内容（3 条）变体下卡片仍占满面板、消息区仍有 269.7px 可视高度。
+  对照组 `panelscroll_before.cjs` 把 CSS 还原成修复前写法，量出「Chromium 下旧写法照样溢出」
+  —— 即本条根因在本地**不可复现**，见上文证据等级说明。
+  > 探针自己踩过一个坑：`<view>` 在浏览器里是**自定义元素、默认 `display: inline`**，
+  > 不加 `view{display:block}` 会把 40 条消息挤成一行绕行、高度全错。已补 `view/text/button/input` 的 display 语义。
+  截图证据落在 `.recover-tmp/panel_log.png` / `panel_chat.png` / `panel_chat_short.png`（`scripts/verify` 只跟踪 `.cjs`）。
+- `scripts/verify/wxbalance.cjs`（新建）：WXML 标签配平静态检查（自闭合/错配/未闭合），
+  本轮 view=80 / scroll-view=7 / text=23 / button=28，与改动前一致。
+- `geomshot.mjs` 35 项回归仍全过（本轮不碰 canvas 几何，确认无连带）。
+- `npm run typecheck` 通过；`npm run build:mp` 自检通过；
+  `node --check game.js` 通过；WXML 配平 view=80 / scroll-view=7 / text=23 / button=28，与改动前一致。
+
+⚠ 上线：纯小程序渲染层改动（`game.wxss` / `game.wxml` / `game.js`），**服务端不用动**，重新上传小程序即可。
+
+
+### 10.9.63 吃碰杠胡从「盖在手牌上的遮罩」改成「手牌上方的流内行」（2026-10-24 第四十九轮）
+
+用户报「局内的吃碰胡杠过操作，现在会出现一层遮罩在手牌上影响用户查看手牌，
+请修改将相关按钮放置在手牌上面显示和操作」。
+
+**原结构**（§10.8⑩ 起的既定方案）：`.claim-mask` 是 `position:absolute; inset:0` 的
+**半透明遮罩**（`rgba(8,18,13,.62)`），盖在 `.tray-stack` 的手牌上，按钮排在遮罩里。
+这个方案有两个实打实的问题：
+
+1. **整条手牌被压暗 62%**。用户恰恰是在响应窗口里要看牌决定碰还是胡 —— 遮罩为「让手牌透出来」
+   而存在，结果正是它让手牌看不清。
+2. **那 68px 高度全被按钮区吃掉，手牌点不到**。`canDiscard` 已排除 `claimWindow`
+   （响应期手牌只读），而遮罩又把整条盖住 —— 玩家想点牌打出只有先点「过」撤掉遮罩这一条路。
+   自摸时更别扭：遮罩在，玩家连「看看还有哪些牌」都得先放弃自摸。
+
+**改法**（`game.wxml` / `game.wxss` / `game.js`）：
+
+| 文件 | 改动 |
+|---|---|
+| `game.wxml` | `.claim-mask` 整块**移出 `.tray-stack`**，改名为 `.claim-row`，排在 `.tray-stack` **之前**（即手牌正上方）。与 `.declare-row` 同一形态 |
+| `game.wxss` `.claim-row` | 删掉 `position:absolute; inset:0` 与 `background: rgba(8,18,13,.62)`；改成 `width:100%` 静态流内行 + `margin-bottom:3px` 与手牌留缝 |
+| `game.wxss` `.controls` | 补 `width:100%` —— 它现在是 `.claim-row` 的唯一子节点且是 flex item，不给死宽度会被压到 min-content（≈一个钮宽），7 个钮全竖着叠起来 |
+| `game.js` | 新增 `applyControls(status, controls)` 收口 `renderControls` 的 4 个早退分支；维护 `this.claimOn`，显隐翻转时补 `fitCanvas()` |
+| `game.js` `onControl` | 自摸「过」的本地撤遮罩改走 `applyControls`（原来直接 `setData({controls:[]})`，不重量 → 布局漂移） |
+
+**为什么必须收口到 `applyControls`**：`renderControls` 有 4 个早退分支（结算 / 掷骰等待 /
+掷骰中 / 响应窗口），每个都要写 `controls`。漏一处就会出现「键没更新 → 不重量 → 画布按旧行高
+定尺 → 溢出 `.canvas-wrap`（flex-end 对齐会往上顶、压到顶栏）」。
+
+**与 §10.8⑨「操作区高度必须恒定」的关系（重要）**：
+
+§10.8⑨ 立过一条铁律 —— *任何会改变画布周边高度的增删都要避免*，当时的修法正是
+「控件全部走 `.claim-mask` 绝对定位，不参与流内高度」。本轮**主动放弃了这条铁律**，
+理由是代价权衡变了：
+
+| | 旧（遮罩） | 新（流内行） |
+|---|---|---|
+| 手牌可读性 | 压暗 62%，用户要看的时刻反而看不清 | 全亮 |
+| 手牌可点性 | 68px 全被盖住，点不到 | 完全可点 |
+| 操作区高度 | 恒定 | 有钮时多 ~45px（5 钮）/ ~38px（7 钮 compact） |
+| 画布 | 不动 | 随之矮一截（`fitCanvas` 按新行高定尺） |
+
+高度抖动这个旧代价现在有完备的解：`.claim-row` 显隐进 `chromeKey` 同款机制
+（`this.claimOn` → `fitCanvas()`），出现/消失那一帧重量，画布按新行高定尺，
+不会出现「顶上去又缩回来」的跳动。这与 `.declare-row`（2026-10-23）是同一套机制。
+
+**验证**：
+
+- `scripts/verify/claimrow.cjs`（新建，13 项断言）：复刻 `.game > .game-main > .board-overlay >
+  .claim-row > .controls` 与 `.tray-stack > .hand-tray`，用**真** game.wxss + app.wxss。
+  - `.claim-row` 整体在手牌条上方（底 316 ≤ 手牌顶 319，缝 3px）；
+  - `elementFromPoint` 打在手牌中心，命中链是 `tile-rank < tile-btn < tray-row < hand-tray`
+    —— **没有任何元素盖在手牌上**；
+  - 5 钮 / 7 钮（compact）都同一行（`uniqTops=1`），`.controls` 宽 679px 没被压成一个钮宽；
+  - 无钮时 `.claim-row` 高 0；有钮时 `board-overlay` 85 → 133px（即已知的高度代价）；
+  - 极端窄行（300px）折成 2 行、总高 76px 仍受控，不溢出。
+  截图证据：`.recover-tmp/claimrow.png`。
+- `geomshot.mjs` 35 项仍全过；`panelscroll.cjs` 13 项仍全过（两轮改动互不牵连）；
+  `typecheck` / `build:mp` / `node --check game.js` 通过；WXML 配平 view=80 / scroll-view=7 不变。
+
+⚠ 上线：纯小程序渲染层改动（`game.wxml` / `game.wxss` / `game.js`），**服务端不用动**，重新上传小程序即可。
+
+
+### 10.9.64 吃碰杠胡「挤变形 / 牌桌忽大忽小」：改恒高操作带（2026-10-24 第五十轮）
+
+用户报（针对 10.9.63 那版）：「为啥操作的按钮会把牌面挤变形，不应该是浮动在上层的吗，
+这样的话会导致牌桌的显示忽大忽小的观感上很不友好」。
+
+**根因（量化，`_claimcost.cjs` 用 game.js 真实算式跑出）**：10.9.63 把按钮从遮罩改成
+**流内行**，行本身按需占高度 → `.board-overlay` 总高变化 → 画布由 `#game-main` 剩余高度
+反算（`fitCanvas`：`w = min(行宽−84, 行高×2)`）→ **整块牌桌连牌面一起缩**：
+
+| 场景（iPhone 13 横屏 844×390） | 画布宽 | 相对遮罩时代 |
+|---|---|---|
+| 遮罩时代（按钮 absolute，0 高度） | 526 | 基准 |
+| 10.9.63 流内行·出现 | 436 | **−17.1%** |
+| 流内行 + 报杠行都出现 | 378 | **−28.1%** |
+
+PC 宽窗同样 −6.2%，iPad（宽度约束）不受影响。**用户看到的「挤变形 / 忽大忽小」就是这个
+17%~28% 的整体缩放**，不是某一个元素变形。
+
+**为什么不能像用户说的「浮在上层」**：`<canvas type="2d">` 是**原生组件**，走独立合成层、
+永远压在 webview DOM 之上，与 z-index / fixed 无关（§10.7① 实测：fixed + `z-index:100`
+的浮层被画布盖住、还被穿透点击）。所以浮层只剩两个落点 ——
+**手牌**（就是 10.9.63 之前那层被否掉的半透明遮罩：把 68px 手牌全压暗 62%、还点不到），
+或者**画布**（不可能）。结论：按钮只能住在「画布与手牌之间」这一条 DOM 带里。
+
+**改法**（`game.wxml` / `game.wxss` / `game.js`）：
+
+| 改动 | 内容 |
+|---|---|
+| 合成一行 | `.declare-row`（报杠）**并入** `.claim-row` 的 `.controls`，成为同一排的 `wx:for`。服务端保证二者互斥（`declareOptionsFor()` 要求「自己回合 + 无 pending」），但报杠与暗杠/补杠/自摸**可能同现**（都是自己回合）—— 这正是必须并排、不能各占一行的原因 |
+| 恒高格子 | 新增 `.action-bar { height: 44px; flex-shrink: 0 }`，`.claim-row` 改 `position:absolute; inset:0` 浮在里面。44px = `.ctrl.art` 标准档行高（图 39 + 小注 4 + 边距 1），compact 档 37px 也放得下 |
+| `chromeKey` 瘦身 | 只剩结算相位一个档位（`over ? 'o' : '-'`）；删掉 `declareEnabled` 数据位与 `declareOn` 变量 |
+| `applyControls` | 删掉 `claimOn` 显隐键与 `fitCanvas()` 触发（高度不再变）；`compact` 阈值改为 `controls.length + declares.length >= 7`（报杠已并排，只数 controls 会让「4 报杠 + 3 暗杠」漏缩号） |
+| `.controls` | `flex-wrap: wrap` → **`nowrap`**（高度锁死，折行会让内容被 `align-items:flex-end` 推向**上方**、落进原生 canvas 区域直接看不见）；配套 `.ctrl` / `.ctrl.declare` 的 `flex-shrink:1; min-width:0; overflow:hidden` 与 `.ctrl.art .ctrl-img { max-width:100% }`（同特异度后来者胜，把 rpx 上限换成「不超过按钮自身盒子」） |
+| `.declare-btn` → `.ctrl.declare` | 48rpx 胶囊改 25px，`white-space:nowrap` + `text-overflow:ellipsis` 收尾；`onDeclareTap` 的协议/校验/连点锁原样不动 |
+
+⚠ **`.action-bar` 必须带 `wx:if="{{!overPhase}}"`** —— 结算态没有操作按钮，整带要收起、
+把 44px 还给画布（§10.8⑫「结算时麻将区域应该放大」）。这一次尺寸变化是**有意为之且只发生一次**：
+相位翻转已进 `chromeKey`（`over ? 'o' : '-'`）→ `fitCanvas` 重量，不会抖。实测 230 → 274px。
+
+**代价（量化后如实说明）**：画布比遮罩时代**固定**小 44px 高度 —— 手机上固定窄 ~88px
+（iPhone 13：526 → 438，−16.7%；iPhone SE：497 → 409，−17.7%；PC 宽窗 −6.0%；**iPad 为 0**，
+宽度约束下操作区高度不参与画布计算）。换来的是：① 牌桌**永不跳动**；② 手牌全亮、可点；
+③ 报杠不再单独跳一次。
+
+**验证**：
+
+- `scripts/verify/claimrow.cjs`（新建，18 项断言）：复刻真 wxss + app.wxss。
+  **核心一条**：`board-overlay` 总高在「有钮 / 无钮」两种状态下**完全相等**（129 vs 129）、
+  `game-main` 高度也相等（230 vs 230）→ `fitCanvas` 永远量到同一个行高 → 画布定尺不动。
+  其余：`.action-bar` 恒高 44px、按钮整体在手牌上方（底 319 ≤ 手牌顶 319）、
+  `elementFromPoint` 命中链 `tile-rank < tile-btn < tray-row < hand-tray`（无遮挡）、
+  5 钮 / 7 钮 compact / 8 钮（4 报杠 + 4 操作钮）都同一行、
+  极端窄条（320px）压到 24px 仍不折行且不向上溢出、
+  结算相位整带归零且 `game-main` 正好多拿 44px（230 → 274）。
+- `geomshot.mjs` 35 项、`panelscroll.cjs` 13 项仍全过；`typecheck` / `build:mp` /
+  `node --check game.js` 通过；WXML 配平 view=80 / scroll-view=7 / button=28 不变。
+
+
+### 10.9.65 移除挡住牌桌的「打出 / 吃 / 碰 / 杠」事件 toast（2026-10-25 第五十一轮）
+
+用户贴真机截图（牌桌中下部一条「东·机器人3 打出 2万」的居中提示，画了红框）问
+「能不能移除这个提示」。
+
+**链路**：`applyGameEvents()` 给每个 `GameEvent` 调 `eventText()` 生成文案，
+再 `broadcastEvent()` 发 `{t:'event', text}` → 客户端 `game.js` 的 `onEvent` → `ui.showToast(…, 2500)`。
+`.toast` 是 `fixed; bottom:156rpx`（§10.8⑨ 为了不压手牌条定的位），落在牌桌中下部。
+
+**为什么该删**：出牌 / 吃 / 碰 / 杠 / 报杠是**每回合都在发生**的常规动作，
+而牌桌上已经有四处同时表达同一件事：
+
+| 渠道 | 表达什么 |
+|---|---|
+| 牌河 + 副露 | 打出的牌、吃碰杠的牌（可视化） |
+| 画布中心贴图动画 | 吃 / 碰 / 杠 / 胡（按 `view.log` 的 seq 排队，§10.9.37 仲裁） |
+| 右侧 📋 操作记录面板 | 同一条 `view.log` |
+| 状态行文案 | 当前该谁动、必须打哪张 |
+
+再叠一层居中的大 toast 只是噪音：它 2.5s 盖住牌桌中下部，机器人连打时还会自己覆盖自己
+（一回合里连发好几条，用户只能看到最后一条闪一下）。
+
+**改法（两处，各管一头）**：
+
+| 位置 | 改动 |
+|---|---|
+| `packages/server/src/index.ts` `eventText()` | `discard / chi / peng / gang / declare` 五种改为返回 `null`（**根本修：不再生成、也不再发**）。保留 `flip / dealRoll / gangRoll`（一局一次，且带骰子点数这类别处没写的细节）与 `over`（本来就 null） |
+| `packages/miniapp/.../game.js` `onEvent` | 加 `PLAY_ACTION_EVENT` 正则过滤，命中即 return。**这条只为兼容还没升级的服务端**（线上 `majiang.dwzynj.top` 会照发）——牌桌本身已经把这些事表达清楚了。空文本也直接 return |
+
+服务端保留的 `broadcastEvent()` 直连调用点（加入 / 离开 / 掉线 / 托管 / 换位 / 准备 / 解散 /
+掷骰坐庄 / 结算结果）**全部不受影响** —— 它们不走 `eventText`。
+
+**验证**：
+
+- `scripts/verify/noisetoast.cjs`（新建，4 项断言）：起真服务端（`MAHJONG_CEREMONY=0`），
+  4 个裸 WebSocket 客户端打满一整局赣州。结果：
+  - 牌局事件的 `event` 总数 8 条，其中**常规牌局动作 0 条**；
+  - 保留的正是设计内的：`西·玩家3 掷骰 3、5（和 8） → 牌墙定位补牌`（gangRoll）、`下局「房主」坐庄`；
+  - 加入房间事件 3 条照发（`北·玩家1 加入了房间` 等）→ 证明 event 通道没被一起关掉。
+- 客户端正则单独回归 15 条真实文案：6 条常规动作全部静默（含「昵称带空格」的边界）、
+  9 条房间级 + 掷骰翻精全部保留。
+- `typecheck` / `build:mp` / `node --check` 通过；WXML 配平不变；
+  `claimrow.cjs` 18 项、`panelscroll.cjs` 13 项、`geomshot.mjs` 35 项回归全过。
+
+⚠ **上线**：这次是**双端改动**。客户端 `PLAY_ACTION_EVENT` 让新包里立刻安静；
+服务端要重新部署才会彻底停止发这几条（少些无用的广播）。两边都改才是完整状态。
+
+
+### 10.9.66 右侧轨压住微信胶囊：轨顶改按胶囊实测位置（2026-10-25 第五十二轮）
+
+用户贴真机截图（右上角微信胶囊「⋯ ○」压在第一个侧轨按钮 💬 上，画了红框）报
+「对局中时右侧的菜单栏会和顶部的小程序 ui 重叠」。
+
+**根因**：`.rail` 是 `position:absolute; top:50%; transform:translateY(-50%)` ——
+在**整块 `.game-main`** 里垂直居中。而 `navigationStyle=custom` 下微信胶囊由微信自己绘制，
+纵向跟着状态栏走、**会伸进 `.game-main` 的顶部**（实测约 15px）。手机横屏的
+`.game-main` 只有 215~230px 高，6 个按钮的轨却要 222px（32px × 6 + 6px × 5）——
+居中后轨顶必然被顶进胶囊：
+
+| 场景 | game-main | 轨高 | 轨顶 | 胶囊下沿 | 重叠 |
+|---|---|---|---|---|---|
+| iPhone 13 横屏 844×390 | 230 | 222 | 32 | 38 | **18px** |
+| iPhone SE 横屏 667×375 | 215 | 222 | 24.5 | 38 | **25.5px** |
+
+**为什么不能靠改一行 `top` 解决**：`top` 写死就得知道胶囊高度，而它随平台/状态栏变
+（iOS 横屏无状态栏、安卓横屏约 24px），写死必然在某类机型上翻车。
+
+**改法**（`game.wxml` / `game.wxss` / `game.js`）：
+
+| 改动 | 内容 |
+|---|---|
+| `game.js` 新增 `syncRailTop()` | 用 **`wx.getMenuButtonBoundingClientRect()`** 拿胶囊实测矩形，算出 `railTop = 胶囊下沿 + 6 − game-main.top`，写进 `data.railTop`；接口不可用/返回全 0 时退回常量 16。挂进 `computeSafeInsets()` 的收尾（旋转、onShow、onReady 都会走到） |
+| `game.wxml` | 两条轨加 `style="top: {{railTop}}px"`；按钮包进新增的 `.rail-inner` |
+| `game.wxss` `.rail` | 去掉 `top:50%` + `transform`；改 `top`（兜底 16px，被 inline 覆盖）+ `bottom: 2px` → 这一列的高度 = 「胶囊下沿 .. 手牌区上沿」那段**安全带** |
+| `game.wxss` `.rail-inner` | `margin: auto 0` —— 带内居中；**装不下时 auto 归零，配合 `.rail` 的 `overflow-y:auto` 从顶部可滚**，绝不溢出到胶囊或手牌上。比 `justify-content:center` 好在：后者在 overflow 时会把内容顶部推进不可滚区域（flex 的经典坑） |
+| 紧凑档（`max-height:680px`） | 32px/6px（222px）→ **28px/3px（178px）**，见下 |
+
+**为什么同时要收紧紧凑档**：轨顶挪到胶囊下方后，可用带只剩 `game-main − 胶囊侵入(≈15px)`：
+iPhone 13 → 212px、iPhone SE → 197px、安卓横屏带 24px 状态栏 → 188px。
+222px 全都装不下（要滚 10~34px，「退出」「✕」被压在底部）。收到 **28px 按钮 / 3px 间距 = 178px**，
+三档分别留 34 / 19 / 10px 余量，**都不需要滚动**。为什么是 28 而不是 30：30px 时安卓那档
+还差 7px（会触发滚动、底部按钮被切一角），而 28 与 30 视觉上几乎无差别。
+
+⚠ **`overflow` 会裁掉未读红点**：`.rail-badge` 是 `top:-2px; right:-2px` 的**外凸**，
+而 overflow 在 padding box 处裁切。所以 `.rail` 补了 `padding: 2px 3px`，
+两条轨用 `left/right: -1px` 抵消（按钮视觉位置仍是距边 2px：−1 + 3 = 2）。
+
+**验证**：`scripts/verify/railtop.cjs`（新建，20 项断言 = 4 场景 × 5 条）：
+用真 game.wxss 复刻结构，胶囊矩形按 `getMenuButtonBoundingClientRect` 的典型值模拟
+（高度 32、纵向 = 状态栏 + 6）。四个场景 **全过**：
+- 轨顶 ≥ 胶囊下沿 + 6（不压胶囊）；
+- 轨底 ≤ game-main 底（不压状态行）；
+- 6 个钮不需要滚动即可看全；
+- 第一个按钮 `elementFromPoint` 命中自己；
+- 未读红点未被 `overflow` 裁切。
+
+截图证据：`.recover-tmp/railtop.png`（iPhone 13 档，画了模拟胶囊）。
+`claimrow.cjs` 18 项、`panelscroll.cjs` 13 项、`geomshot.mjs` 35 项回归全过；
+`typecheck` / `build:mp` / `node --check` 通过；WXML 配平 view=82（+2 为 `.rail-inner`）。
+
+⚠ 上线：纯小程序渲染层改动，**服务端不用动**。
+
+
+### 10.9.67 操作带 44 → 34px：把高度让给牌桌（2026-10-25 第五十三轮）
+
+用户报「玩家吃碰胡操作栏和按钮的显示大小可以缩小一点，尽量多给牌桌留一点空间
+这样牌桌才能显示的更大」。
+
+**杠杆关系**：画布尺寸由 `fitCanvas` 按 `#game-main` 的剩余高度反算
+（`w = min(行宽−84, 行高×2)`），手机横屏是**高度约束** —— 所以操作区每多占 1px，
+画布就少 2px 宽。反过来说：**把操作带压掉 10px，画布就宽 20px**。
+
+**改动**（一次等比缩，不做局部缩）：
+
+| 项 | 旧 | 新 | 依据 |
+|---|---|---|---|
+| `.action-bar` 高 | 44px | **34px** | = 图 29 + 小注净 4 + 底缝 1 |
+| `.ctrl.art .ctrl-img` | 46×39 | **34×29** | 面积 −46%，仍是可辨认的书法单字 |
+| `.ctrl.art .ctrl-cap` | 9px/10px | **8px/9px** | 牌名小注，跟着缩 |
+| `.ctrl.art.compact .ctrl-img` | 38×32 | **30×25** | ≥7 钮时的全体小号（10.9.35 的「必须全体一起缩」仍然适用） |
+| `.ctrl.art.compact .ctrl-cap` | 8px/9px | **7px/8px** | 同上 |
+| `.ctrl.art` margin | `1px 4px` | **`0 4px`** | 纵向那 1px 让给「按钮与手牌之间的缝」 |
+| `.claim-row` | `inset: 0` | **`bottom: 1px`** | 小注是深底胶囊，直接贴手牌上沿会「糊在一起」 |
+| `.controls` | `align-items`（默认 stretch） | **`flex-end`** | 报杠胶囊只有 25px、艺术钮 33px，`stretch` 让两者**顶边**齐平（胶囊像浮在上面）；贴底才是「同一排」 |
+
+**画布增益**（`fitCanvas` + `handMetrics` 真实算式跑的）：
+
+| 场景 | 44px | 34px | 增益 |
+|---|---|---|---|
+| iPhone 13 横屏 844×390 | 438×219 | **458×229** | +20px 宽 / **+4.6%** |
+| iPhone SE 横屏 667×375 | 409×205 | **429×215** | +20px 宽 / +4.9% |
+| 安卓横屏 800×360 | 378×189 | **398×199** | +20px 宽 / +5.3% |
+| iPad 横屏 1080×810 | 979×490 | 979×490 | 0（宽度约束，不参与） |
+| PC 宽窗 1440×800 | 1258×629 | **1278×639** | +20px 宽 / +1.6% |
+
+**没动的**：操作带高度仍是**常量**（按钮显隐不改布局，这是 10.9.64 修「忽大忽小」的前提）；
+手牌牌位 46×66 不动（缩手牌就是你之前否掉的「挤变形」）；状态行 18.7px 不动。
+
+**验证**：`scripts/verify/claimrow.cjs`（已改为 **18 项断言全过**）。
+⚠ 本轮把两个断言指标换掉了：
+- `44` 这类硬编码高度改成**从真 CSS 里读 `BAR_H`**，避免探针里写第二份真相；
+- 「行数」不再按 `top` 聚类、也不按高度比 —— `align-items:flex-end` 下报杠胶囊（22~25px）
+  与艺术钮（29~33px）**底对齐后顶边天然差一截**，两种旧判法都会误判成两行。
+  改为直接查真正要保证的两件事：**`flex-wrap` 必须是 `nowrap`**、**每个按钮矩形必须落在
+  `.action-bar` 矩形内**（不向上/向下溢出）。实测四档场景溢出均为 0px。
+
+其余回归：`railtop.cjs` 20 项、`panelscroll.cjs` 13 项、`geomshot.mjs` 35 项全过；
+`typecheck` / `build:mp` / `node --check` 通过；WXML 配平不变。
+
+⚠ 上线：纯小程序渲染层改动，**服务端不用动**。
+
+
+### 10.9.68 自己/对家第 3 组副露被静默丢弃：边界放宽到屏幕边（2026-10-25 第五十四轮）
+
+**根因**：`drawMelds` 里自己/对家（slot 0/2）那一支拿**左右两侧副露块**当边界
+（`riverBlockRect(3).r` / `riverBlockRect(1).l` → 466 / 814），第 3 组起判定落在界外 → `continue`
+静默丢，不报错、不告警。两侧只有 96px 富余，而一组横放副露 ≈ 148px。
+
+**改法**：边界改成**屏幕边**（`EDGE_PAD = 10`）：`lx = R.l - 6`、`rx = R.r + 6`，再夹到 `[10, W-10]`。
+安全性靠几何而不是靠夹取：侧块 y 区间 234..405，自家副露行 y≈464、对家 y≈128，**纵向不相交**，
+所以往两侧长出去也压不到侧家副露。这条前提写进注释了，将来改牌桌几何要回来复核。
+
+**验证**：`.recover-tmp/a_meld_bounds.mjs`（CJS 加载器 + 打桩 canvas，`new Table(stub,2)`）：
+自家/对家各塞 5 组 → 5/5 都画出、x 落在 `[10,1270]`、左右两侧互不重叠且有序 → ALL PASS。
+
+### 10.9.69 `过` 按钮显示成纯文字（2026-10-25 第五十五轮）
+
+**现象**：操作带里「过」是裸文字，和其它书法艺术钮不是一套视觉。
+
+**排查**：不是缺图。`packages/server/public/ui/operate/guo.webp` 在磁盘上；按 `UI_GROUPS`
+递归枚举 `/api/ui` 也能列出 `operate/guo.webp`。所以 `urlOf('guo')` 返空只有两种可能：
+**服务端还是旧进程**（`/api/ui` 清单里没有 guo）或**客户端 7 天 UI 清单缓存**（storage `mj-ui-art` 未过期）。
+
+**改法**（修的是"不会突兀"，不是"补图"）：`.controls .ctrl:not(.art):not(.declare)` 统一成
+金底胶囊（30px 高、`inline-flex` 居中、`nowrap` + 省略号），次要件（`:not(.primary)`）转透明描边，
+`compact` 档再降一档。这样贴图缺失时是"另一种按钮"，不再是裸文字。
+⚠ 与 §10.9.64 的约束不冲突：`.controls` 仍 `nowrap`、`.ctrl{flex-shrink:1;min-width:0}`，按钮显隐不改操作带高度。
+
+**收尾（环境侧，非代码）**：要看到金色艺术字需**重启服务端**让 `/api/ui` 带上 guo，
+并在开发者工具里**清缓存重编译**（或等 `mj-ui-art` 过期）。
+
+### 10.9.70 胡牌张标注：`winTile` 单一真相（2026-10-25 第五十六/五十七轮）
+
+**问题**：`WinInfo.tile` 的语义是「点炮那张」，自摸恒为 `null`。于是自摸时：日志 `tiles` 为空、
+中心动画只写「胡」、结算面板只写赢家 → 别家根本不知道胡的是哪张。
+
+**改法**（不动 `tile` 语义，另开一个"给显示用"的字段）：
+`WinInfo.winTile: Tile | null = via==='zimo' ? lastDrawn : tile`，在 `tryBuildWin` 与 `gzBuildWin`
+两处 return 各填一次，然后只从这里分发：
+
+| 落点 | 呈现 |
+|---|---|
+| `applyWin` 日志 | `pushLog('hu', seat, [winTile], 自摸/点炮)` → 记录行「东 胡 五万 自摸」 |
+| `table.js` 中心动画 | `applyActionFx` 带 `tile: a.tiles[0] ?? null`；`drawActionFx` 注 `胡 · 五万`（艺术字与回退路径都补） |
+| settle 消息 | 南昌/赣州两处都带 `winTile` + `winVia`（`shared` 里加可选字段） |
+| 结算面板 | `game.js onSettle` 算 `settleWinTile` → `.settle-wintile` 显示「胡牌张：五万（自摸）」 |
+
+**兼容**：旧服务端没有这两个字段 → 客户端拿到空串不渲染该行；中心动画 `tile=null` 退化成只写「胡」。
+**验证**：`.recover-tmp/h_wintile.mts`（tsx，真牌型 `buildWin`）自摸/点炮两路 `winTile` 派生 + 日志 + 结算取值；
+`.recover-tmp/h_fx_tile.mjs`（打桩 canvas）动画带 tile、文本含「胡」、旧服务端降级、碰不受影响 → 均 ALL PASS。
+
+### 10.9.71 结算弹框「无法滚动和缩小」（2026-10-27 第五十八轮）
+
+**现象**：结算内容一多，底部「最小化 / 下一局」被切掉，中间表格也划不动 —— 两个症状同源。
+
+**根因**：`.layer-card` 是 **flex 列 + `max-height:86vh` + `overflow:hidden`**，`.settle-body`
+（`<scroll-view>`）只写了 `max-height:52vh`，`min-height` 取默认 `auto`。
+微信的 `scroll-view` **不套用 CSS `overflow`**，也就不会像 Chromium 那样在滚动容器上自动取 `min-size:0`，
+于是它**按内容高度撑住、拒绝被压**：卡片总高 > 86vh → 底部被 `overflow:hidden` 切掉；
+同时 `scroll-view` 也拿不到一个"确定的计算高"，内部照样不滚。
+
+**改法**（两行，与 §10.9.62 的 `.panel-body` 同一手法）：
+
+```css
+.settle-body { max-height:52vh; min-height:0; flex-shrink:1; }
+```
+
+**验证**：`scripts/verify/settlescroll.cjs`，双模型 —— `webview`（给 `overflow-y:auto`，Chromium 自动
+min-size:0）**复现不出来**，必须另建 `wechat` 模型（纯块级、min-height:auto）才见 7 项失败：
+`min-height` 为 `auto`、卡片溢出、700×320 时按钮底 323.1 > 320。修完三档全过：
+
+| 视口 | body clientH | 可滚内容 | 按钮底 / 卡片底 / 屏高 |
+|---|---|---|---|
+| 844×390 | 168 | 508 | 347.7 / 362.7 / 390 |
+| 780×360 | 146 | 508 | 319.8 / 334.8 / 360 |
+| 700×320 | 117 | 508 | 282.6 / 297.6 / 320 |
+
+**教训（通用）**：任何"要能被压小"的竖向 `<scroll-view>` 放在 flex 列里都必须**显式 `min-height:0`**；
+这条在本地 Chromium 里永远验不出，探针必须自建"微信语义"模型才有效。
 
 - [ ] **重新部署服务端**（`wss://majiang.dwzynj.top/ws`）：线上版本落后于仓库，不认识
       `{t:'ping'}`，也还没有 `未知消息：<t>` 的类型回显与「每连接只提示一次」；

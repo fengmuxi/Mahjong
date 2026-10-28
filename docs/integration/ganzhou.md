@@ -149,7 +149,6 @@ P0 阶段已落地「契约 + 注册表 + 房间玩法落库 + 入口玩法卡�
 
 ```
 npm run typecheck   # 全量类型检查（tsc --noEmit），必须零报错
-npm run build       # 客户端构建；本机 WorkBuddy 安全 shim 会拦 vite 清 dist，需 NODE_OPTIONS="" 绕过（与本项目无关）
 npm run start       # 起服务端，按规则文档人工验证
 ```
 

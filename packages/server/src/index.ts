@@ -24,7 +24,8 @@ import { Game, type GameEvent } from './game.ts';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(__dirname, '../../client/dist');
 /**
- * 牌面 CDN 资源目录（`npm run build:cdn-tiles` 产出）。
+ * 牌面 CDN 资源目录（原 `npm run build:cdn-tiles` 产出；该生成器已随 packages/client 删除，
+ * 提交 104bfdc —— 目录里现有的 174 个 webp 是唯一副本，见 `public/README.md`）。
  *
  * 为什么不进代码包：官方代码包体检要求**图片资源合计 ≤ 200KB**、主包 < 1.5MB，
  * 34 张牌面无论怎么压都塞不进（93×135 的 PNG 也有 731KB）。改为服务端托管 + 小程序
@@ -154,6 +155,11 @@ interface Player {
   isBot: boolean;
   /** 手动托管：开启期间由服务端代你掷骰 / 应答 / 出牌 */
   auto: boolean;
+  /**
+   * 局内主动退出标记：对局进行中点「退出」后座位仍被托管占着打完后回收，
+   * 期间不可 resume / join 回原座位；仅在 `removeExitedSeats` 回收前为 true。
+   */
+  exited: boolean;
 }
 
 interface Room {
@@ -184,6 +190,8 @@ interface Room {
   botThink: { key: string; due: number } | null;
   /** 掷骰动画结束后的视图刷新（等待掷骰阶段不自动掷——一直等到玩家点击） */
   diceEndTimer: NodeJS.Timeout | null;
+  /** 杠后掷骰等待兜底：真实玩家（非托管/非机器人/在线）杠后 TURN_MS 不点骰子 → 自动替掷，消除整桌锁死 */
+  gangRollTimer: NodeJS.Timeout | null;
   /** 首局定庄：此定时器让最后一掷的骰子动画与金色点数亮满监听再进对局 */
   dealerStartTimer: NodeJS.Timeout | null;
   /** 没有任何人类连接的起始时间（回收巡检用；有人连接即清空） */
@@ -280,11 +288,11 @@ function lobbyState(room: Room, you: number): ServerMsg {
     isBot: p.isBot,
     auto: p.isBot || p.auto || p.ws === null,
   }));
-  // 大厅横幅的语义是「可以开局了」：四人就绪（离线座位按托管算）**且**首局已定庄（机器人恒就绪）
-  const allReady =
-    players.length === MAX_SEATS &&
-    room.players.every((p) => p.ready || p.isBot || p.ws === null) &&
-    room.firstDealerDecided;
+  // 大厅横幅的语义是「可以开局了」：四人就绪（离线座位按托管算）；
+  // **首局定庄只在需要的玩法上才算条件**（南昌默认东起庄 → firstDealerDecided 恒 false，
+  // 原先把它写死在条件里，导致南昌房间的横幅永远不显示，即使已经能开局）。
+  // 与 canStart() 同口径，避免两处判定不一致。
+  const allReady = canStart(room);
   const token = room.players.find((p) => p.seat === you)?.token ?? '';
   return {
     t: 'state',
@@ -323,19 +331,32 @@ function broadcastGame(room: Room): void {
   }
 }
 
+/**
+ * 牌局动作 → 事件 toast 文案。返回 `null` = 不弹。
+ *
+ * 2026-10-25（用户报「打出提示挡牌桌，能不能移除」）：
+ * **出牌 / 吃 / 碰 / 杠 / 报杠 一律不弹 toast** —— 这五种是**每回合都在发生**的常规动作，
+ * 而且牌桌上已经有四处同时在表达同一件事：
+ *   ① 牌河（打出的牌）+ 副露（吃碰杠的牌）；
+ *   ② 画布中心的贴图动作动画（吃/碰/杠/胡，按 `view.log` 的 seq 排队）；
+ *   ③ 右侧 📋 操作记录面板（同一条 `view.log`）；
+ *   ④ 当前状态行文案。
+ * 再叠一层居中的大 toast 只是噪音：它会持续 2.5s 盖住牌桌中下部，机器人连打时还会互相覆盖。
+ *
+ * 保留 `flip / dealRoll / gangRoll`（一局一次或一次杠一次，且带骰子点数这类
+ * 别处没写的细节）与 `over`（本来就返回 null）。房间级事件走的是
+ * `broadcastEvent()` 直接调用、不经过这里，不受影响。
+ */
 function eventText(room: Room, e: GameEvent): string | null {
   const who = (seat: number) => playerName(room, seat);
   switch (e.kind) {
+    // 常规动作：牌桌已可视化，不重复弹 -------------------------------------------------
     case 'discard':
-      return `${who(e.seat)} 打出 ${tileName(e.tile)}`;
     case 'chi':
-      return `${who(e.seat)} 吃 ${tileName(e.tile)}`;
     case 'peng':
-      return `${who(e.seat)} 碰 ${tileName(e.tile)}`;
     case 'gang':
-      return `${who(e.seat)} 杠 ${tileName(e.tile)}`;
     case 'declare':
-      return `${who(e.seat)} 报杠 ${tileName(e.tile)}（展示三张）`;
+      return null;
     case 'flip':
       return room.variant === 'ganzhou'
         ? `掷骰 ${e.dice[0]}、${e.dice[1]}（和 ${e.dice[0] + e.dice[1]}）→ 牌墙尾倒数第 ${e.dice[0] + e.dice[1]} 墩，翻出正精「${tileName(e.pi)}」（正精共 6 张、副精共 6 张，结算时揭晓）`
@@ -412,6 +433,11 @@ function onGameOver(room: Room): void {
   if (room.autoTimer) {
     clearTimeout(room.autoTimer);
     room.autoTimer = null;
+  }
+  // 杠后掷骰等待兜底定时器：本局结束一并清掉，避免残留定时器在 phase 回 lobby 后误触发
+  if (room.gangRollTimer) {
+    clearTimeout(room.gangRollTimer);
+    room.gangRollTimer = null;
   }
   // 定庄后那 2.6s 的「等骰子动画再开局」定时器也必须清掉：本局既然已经结束
   // （含房主主动 abandon），残留的定时器会在phase 回 lobby 后自行 startGame，
@@ -514,6 +540,8 @@ function onGameOver(room: Room): void {
         t: 'settle',
         winner: outcome.winner, // null = 流局（客户端据此选 draw 图标）
         title: winner !== null ? `${playerName(room, winner)} ${result}` : `${result} · 精分结算`,
+        winTile: g?.winInfo?.winTile ?? null, // 胡牌张（流局为 null）
+        winVia: g?.winInfo?.via ?? null,
         rows: [0, 1, 2, 3].map((s) => ({
           seat: s,
           name: playerName(room, s),
@@ -610,6 +638,8 @@ function onGameOver(room: Room): void {
       t: 'settle',
       winner, // 本局赢家座位（客户端据此选 win/lost 图标）
       title: `${playerName(room, winner)} ${result}`,
+      winTile: wi.winTile, // 胡牌张（自摸=摸到那张、点炮=打出那张）
+      winVia: wi.via,
       rows: [0, 1, 2, 3].map((s) => ({
         seat: s,
         name: playerName(room, s),
@@ -651,7 +681,8 @@ function onGameOver(room: Room): void {
   room.phase = 'lobby';
   for (const p of room.players) p.ready = p.isBot;
 
-  // 本局结束仍未重连的座位 → 离座（机器人不在此列）
+  // 本局结束仍未重连的座位 → 离座（机器人不在此列）；局内退出者 → 回收座位
+  removeExitedSeats(room);
   if (!pruneGonePlayers(room)) return;
   broadcastLobby(room);
 }
@@ -681,6 +712,25 @@ function pruneGonePlayers(room: Room): boolean {
   return true;
 }
 
+/**
+ * 回收「局内主动退出」的座位：本局结束（收桌 / 点下一局 / 流局）时调用。
+ * 这些座位在对局中由托管代打、标记 `exited`，此刻才真正从房间移除、清令牌、改选房主。
+ * 与 pruneGonePlayers 的区别：那里只在「一个人类都不剩」时收房；这里是主动清退已退出的真人。
+ */
+function removeExitedSeats(room: Room): void {
+  const gone = room.players.filter((p) => p.exited);
+  if (gone.length === 0) return;
+  for (const p of gone) {
+    if (p.reconTimer) {
+      clearTimeout(p.reconTimer);
+      p.reconTimer = null;
+    }
+    tokens.delete(p.token);
+  }
+  room.players = room.players.filter((p) => !p.exited);
+  ensureHost(room);
+}
+
 /** 房主必须由人类担任：房主不在场时交给座位最靠前的人类 */
 function ensureHost(room: Room): void {
   if (room.players.some((p) => p.seat === room.hostSeat)) return;
@@ -697,7 +747,8 @@ function finalizeIfReady(room: Room): void {
   room.phase = 'lobby';
   clearDiceTimers(room);
 
-  // 展示期间仍未重连的 → 离座（机器人保留）
+  // 展示期间仍未重连的 → 离座（机器人保留）；局内退出者 → 回收座位
+  removeExitedSeats(room);
   if (!pruneGonePlayers(room)) return;
 
   // 能立刻开下一局就**不要再广播大厅态**：客户端是三个独立页面，
@@ -724,6 +775,7 @@ function applyGameEvents(room: Room, events: GameEvent[]): void {
   syncDice(room);
   broadcastGame(room);
   syncAuto(room);
+  syncGangRoll(room);
 }
 
 /** 该座位是否由服务端代打（机器人 / 手动托管 / 掉线） */
@@ -906,6 +958,40 @@ function syncAuto(room: Room): void {
   }
 }
 
+/**
+ * 杠后掷骰等待兜底（E 修复）：真实在场的玩家杠后不点「掷骰补牌」会卡住整桌
+ * （其余三家行牌全被 assertNoRitual 拒绝，只能房主解散）。
+ * · 仅覆盖「杠后掷骰」等待（gangCeremony.dice === null）；开局/翻精的掷骰等待保持原设计不动，
+ *   不扩大 §5.4「不自动掷」的范围。
+ * · 托管/机器人/掉线座位由 syncAuto 自动掷，这里只接「真实在线人类」的锁死兜底。
+ * · 超时 TURN_MS（与响应窗口同口径）后自动调 rollDice(seat) —— 与手动同一路径，摸牌位置一致（保公平）。
+ */
+function syncGangRoll(room: Room): void {
+  if (room.gangRollTimer) {
+    clearTimeout(room.gangRollTimer);
+    room.gangRollTimer = null;
+  }
+  const g = room.game;
+  if (!g || g.phase !== 'playing') return;
+  const gc = g.gangCeremony;
+  if (!gc || gc.dice !== null) return; // 没在等杠后掷骰，或已掷（动画中）
+  const seat = gc.seat;
+  if (isAutoSeat(room, seat)) return; // 托管/机器人/掉线 → syncAuto 已处理
+  room.gangRollTimer = setTimeout(() => {
+    room.gangRollTimer = null;
+    const gg = room.game;
+    if (!gg || gg.phase !== 'playing') return;
+    const c = gg.gangCeremony;
+    if (!c || c.dice !== null || c.seat !== seat) return; // 局面已变（已掷/已清）
+    if (isAutoSeat(room, seat)) return;
+    try {
+      applyGameEvents(room, gg.rollDice(seat));
+    } catch {
+      /* 状态竞态忽略 */
+    }
+  }, TURN_MS);
+}
+
 function startGame(room: Room): void {
   room.phase = 'game';
   room.pendingSwap = null; // 开局后换位请求作废
@@ -968,6 +1054,12 @@ function applySeatSwap(room: Room, a: number, b: number): void {
     if (room.nextDealer === a) room.nextDealer = b;
     else if (room.nextDealer === b) room.nextDealer = a;
   }
+  // 累计积分随人走：room.totals 是**按座位下标**存的历史得分，换位时若不跟着换，
+  // 两个人的累计分会互相对调，且后续还在新座位上继续累加 —— 错误永久固化，
+  // 最终「解散牌桌」弹窗里的累计分也是错的。
+  const ta = room.totals[a];
+  room.totals[a] = room.totals[b];
+  room.totals[b] = ta;
   // 首局定庄的掷骰结果随人迁移：换位后仍是同一批人比大小，不该白扔
   for (const r of room.dealerRolls) {
     if (r.seat === a) r.seat = b;
@@ -1205,14 +1297,15 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         players: [{
           seat,
           name: cleanName(msg.name, seat),
-          token,
-          pid: cleanPid(msg.pid),
-          ready: false,
-          ws,
-          reconTimer: null,
-          isBot: false,
-          auto: false,
-        }],
+        token,
+        pid: cleanPid(msg.pid),
+        ready: false,
+        ws,
+        reconTimer: null,
+        isBot: false,
+        auto: false,
+        exited: false,
+      }],
         phase: 'lobby',
         game: null,
         nextDealer: 0,
@@ -1226,6 +1319,7 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         autoTimer: null,
         botThink: null,
         diceEndTimer: null,
+        gangRollTimer: null,
         dealerStartTimer: null,
         noHumanSince: null,
         kicked: new Set<string>(),
@@ -1259,6 +1353,11 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         send(ws, { t: 'error', reason: '房间已失效，请重新创建或加入房间' });
         return;
       }
+      // 局内退出者：本局结束前令牌虽在，但不许凭 resume 回原座位（座位正被托管占着打完）
+      if (player.exited) {
+        send(ws, { t: 'error', reason: '你已退出本局，本局结束后可重新加入房间' });
+        return;
+      }
       const sameWs = player.ws === ws;
       attachSeat(room, player, ws, sameWs);
       return;
@@ -1288,6 +1387,11 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       }
       const mine = pid ? room.players.find((p) => !p.isBot && p.pid === pid) : null;
       if (mine) {
+        // 局内退出者：本局结束前不让其凭 pid 抢回原座位（与 resume 同一拦截口径）
+        if (mine.exited) {
+          send(ws, { t: 'error', reason: '你已退出本局，本局结束后可重新加入房间' });
+          return;
+        }
         attachSeat(room, mine, ws, mine.ws === ws);
         return;
       }
@@ -1304,7 +1408,7 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       const seat = RANDOM_SEATS ? free[Math.floor(Math.random() * free.length)] : free[0];
       const name = cleanName(msg.name, seat);
       const token = randomUUID();
-      room.players.push({ seat, name, token, pid, ready: false, ws, reconTimer: null, isBot: false, auto: false });
+      room.players.push({ seat, name, token, pid, ready: false, ws, reconTimer: null, isBot: false, auto: false, exited: false });
       binding.set(ws, { code, seat });
       tokens.set(token, { code, seat });
       broadcastEvent(room, `${windOf(room, seat)}·${name} 加入了房间`);
@@ -1413,10 +1517,16 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         reconTimer: null,
         isBot: true,
         auto: true,
+        exited: false,
       });
       broadcastEvent(room, `${windOf(room, seat)}·${name} 加入了房间`);
       broadcastLobby(room);
       syncBotDealerRolls(room); // 机器人自动掷骰定庄
+      // 补位后可能已经满足开局条件（房主早就点过「准备」）—— 这里必须也检查一次。
+      // 协议里没有「开始」指令，开局只由服务端在 ready / 定庄结算时自动触发；
+      // 漏了这一句，房主「先准备、后用机器人补满」的房间会永远停在大厅，
+      // 只能再点一次「准备 / 取消准备」重新走 ready 分支才能动。
+      if (!room.game && room.phase === 'lobby' && canStart(room)) startGame(room);
       return;
     }
     case 'removeBot': {
@@ -1624,6 +1734,37 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
     }
     case 'leave': {
       leaveRoom(ws);
+      return;
+    }
+    case 'exit': {
+      const b = binding.get(ws);
+      const room = b ? rooms.get(b.code) : null;
+      if (!b || !room) {
+        send(ws, { t: 'error', reason: '当前不在房间中' });
+        return;
+      }
+      const me = room.players.find((p) => p.seat === b.seat);
+      if (!me) return;
+      if (room.game && room.game.phase === 'playing') {
+        // 局内退出：保留座位、交给托管把本局打完，本局结束后由 removeExitedSeats 回收。
+        // 标记 exited → resume / join 凭 token / pid 都回不来；清掉本连接的绑定与座位指针，
+        // 但**保留令牌**到回收时再删（让拒连文案更明确，而非笼统的「房间已失效」）。
+        binding.delete(ws);
+        me.ws = null;
+        me.auto = true;
+        me.exited = true;
+        if (me.reconTimer) {
+          clearTimeout(me.reconTimer);
+          me.reconTimer = null;
+        }
+        ensureHost(room); // 退出的若是房主，立即改选新房主
+        broadcastEvent(room, `${me.name} 已退出本局，由托管代打至本局结束`);
+        broadcastGame(room);
+        syncAuto(room);
+        return;
+      }
+      // 大厅 / 摊牌展示：等同主动离开（立即移除座位、回房间）
+      removePlayer(room, b.seat, `${me.name} 离开了房间`);
       return;
     }
     case 'swap': {
@@ -1982,7 +2123,9 @@ const server = http.createServer((req, res) => {
 
     if (!fs.existsSync(DIST)) {
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
-      res.end('客户端尚未构建：请先运行 npm run build');
+      // web 客户端（packages/client）已在提交 104bfdc 移除，npm run build 随之删除；
+      // 对局入口改为微信小程序（packages/miniapp），服务端只保留 /ws 与 /api 资源。
+      res.end('web 客户端已移除，请使用微信小程序端加入对局');
       return;
     }
     let file = path.normalize(path.join(DIST, decodeURIComponent(url.pathname)));
@@ -2122,7 +2265,7 @@ server.listen(PORT, () => {
   console.log(
     tileCount === 34
       ? `牌面素材 ${TILES_DIR} · ${tileCount} 张 · 版本 ${TILES_VER}`
-      : `⚠ 牌面素材缺失（${TILES_DIR} 里只有 ${tileCount}/34 张）→ 客户端会退回矢量牌面；先跑 npm run build:cdn-tiles 或检查部署是否漏带 public/tiles`,
+      : `⚠ 牌面素材缺失（${TILES_DIR} 里只有 ${tileCount}/34 张）→ 客户端会退回矢量牌面；生成器已随 packages/client 删除（提交 104bfdc），请检查部署是否漏带 public/tiles`,
   );
   // UI 贴图自检（2026-10-21）：同理，清单为空 = 各绘制点回退矢量/文字
   const uiFiles = fs.existsSync(UI_DIR)
@@ -2135,7 +2278,7 @@ server.listen(PORT, () => {
   console.log(
     uiCount >= 24
       ? `UI 贴图 ${UI_DIR} · ${uiCount} 张 · 版本 ${UI_VER}`
-      : `⚠ UI 贴图缺失（${UI_DIR} 里只有 ${uiCount}/24 张）→ 牌背/操作钮/结算艺术字/桌面/座位平放牌会回退矢量；先跑 npm run gen:ui-cdn 或检查部署是否漏带 public/ui`,
+      : `⚠ UI 贴图缺失（${UI_DIR} 里只有 ${uiCount}/24 张）→ 牌背/操作钮/结算艺术字/桌面/座位平放牌会回退矢量；跑 node scripts/gen_ui_extra.mjs 重新生成，或检查部署是否漏带 public/ui`,
   );
   // 局内音效自检（2026-10-23）：音效同样走 CDN 清单，缺文件 = 客户端静音回退（不影响对局）
   const soundTotal = Object.keys(SOUND_FILES).length;

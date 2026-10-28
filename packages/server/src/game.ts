@@ -45,8 +45,10 @@ export type GameEvent =
 export interface WinInfo {
   seat: number;
   via: 'zimo' | 'ron';
-  /** 点炮的那张牌 */
+  /** 点炮的那张牌（自摸恒为 null；胡牌张见 winTile） */
   tile: Tile | null;
+  /** 胡牌张：自摸 = 刚摸那张（lastDrawn）；点炮 = 打出的那张（= tile）。统一单一口径供记录/结算/动画用 */
+  winTile: Tile | null;
   /** 点炮者座位（ron） */
   from: number | null;
   shapes: WinShape[];
@@ -618,11 +620,20 @@ export class Game {
       else base.pop();
     }
     const melds = this.melds[seat] ?? [];
-    // 按「排序后的手牌 + 副露」做签名缓存：每次广播只有行动者那家手牌变了，
-    // 其余三家直接命中，避免每帧重算（南昌带赖子分解 34 张 ≈ 4.3ms，赣州 ≈ 0.2ms）。
+    // 缓存 key 必须覆盖**所有**影响输出的输入，否则会命中旧缓存标出死张：
+    // ① 自己手牌+副露（本家行动后变）；② 全部副露 + 全部牌河（别家打牌/碰杠后变，决定 visibleRemain）；
+    // ③ 翻精口径（jingPi/jingFu 或 gzJing 正副，翻精前后变）。
+    // 原实现只把 ① 编进 key → 自己手牌没动时命中旧缓存，别家打出第 4 张仍标死张（B 修复）。
+    // 代价：key 构建多一次全牌扫描（≈0.05ms），但保住了南昌 34 张≈4.3ms/座 的缓存收益。
+    const gz = this.gz && this.gzJing;
+    const jingKey = gz ? `g${gz.zheng[0]}.${gz.fu[0]}` : `n${this.jingPi}.${this.jingFu}`;
+    let ext = jingKey + '#';
+    for (const ms of this.melds) for (const m of ms) ext += m.tiles.join('+') + ';';
+    ext += '|';
+    for (const r of this.rivers) ext += r.join(',') + '|';
     const key = `${base.slice().sort((a, b) => a - b).join(',')}|${melds
       .map((m) => m.tiles.join('+'))
-      .join(';')}`;
+      .join(';')}|${ext}`;
     const slot = this.waitsCache[seat] || (this.waitsCache[seat] = { key: '', waits: [] });
     if (slot.key === key) return slot.waits;
 
@@ -861,6 +872,10 @@ export class Game {
           this.applyWin(info, lock);
           return [];
         }
+        // 抢杠胡被撤回后若 buildWin 判定不成立（副露已回退为碰、牌已还手牌），
+        // 不能继续走下面的「补杠成立并补牌」——否则会出现「3 张当杠记 2 分又多摸一张」的畸形状态。
+        // 直接推进回合（无人胡，补杠视为不成立）。
+        return this.advanceTurn();
       }
       this.logGang(p.robKong.seat, p.tile, false);
       this.pushLog('bugang', p.robKong.seat, [p.tile, p.tile, p.tile, p.tile]);
@@ -1302,6 +1317,7 @@ export class Game {
       seat,
       via,
       tile,
+      winTile: via === 'zimo' ? this.lastDrawn : tile,
       from,
       shapes: f.shapes,
       qixing: f.qixing,
@@ -1391,6 +1407,7 @@ export class Game {
       seat,
       via,
       tile,
+      winTile: via === 'zimo' ? this.lastDrawn : tile,
       from,
       shapes: a.shapes,
       qixing,
@@ -1447,10 +1464,12 @@ export class Game {
     if (info.tiandi === 'di') labels.push(this.gz ? '地和' : '地胡');
     if (info.gankai) labels.push('杠开');
     this.result = `${info.via === 'zimo' ? '自摸' : '胡牌'}（${labels.join(' · ')}）`;
+    // 胡牌张统一取 WinInfo.winTile（自摸=lastDrawn、点炮=打出张；见 buildWin）。
+    // 之前自摸 info.tile 为 null → 记录空白、中心动画/结算也无法标注「胡的是哪张」。
     this.pushLog(
       'hu',
       info.seat,
-      info.tile !== null ? [info.tile] : [],
+      info.winTile !== null ? [info.winTile] : [],
       info.via === 'zimo' ? '自摸' : '点炮',
     );
   }

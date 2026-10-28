@@ -257,6 +257,14 @@ export type ClientMsg =
   | { t: 'resume'; token: string }
   | { t: 'ready'; ready: boolean }
   | { t: 'leave' }
+  /**
+   * 主动离开 / 退出。
+   * · 大厅、摊牌展示中：等同 `leave`（立即移除座位、回房间）。
+   * · **对局进行中**：保留座位 → 交给服务端托管把本局打完（`auto=true`），
+   *   座位标记 `exited`，本局结束（收桌 / 下一局 / 流局）时由 `removeExitedSeats` 回收。
+   *   中途不可凭 token / pid 重连回原座位（resume / join 均会被拒）。
+   */
+  | { t: 'exit' }
   /** 请求换位：目标座位空闲 → 直接换；有人 → 向对方发起交换请求 */
   | { t: 'swap'; toSeat: number }
   /** 应答换位请求（被请求方） */
@@ -416,6 +424,10 @@ export type ServerMsg =
       title: string;
       /** 本局赢家座位（null = 流局 / 无人胡牌）；客户端据此显示结算面板顶部的结果图标（win/lost/draw） */
       winner?: number | null;
+      /** 胡牌张牌 id（自摸=摸到的那张、点炮=打出那张）；流局/旧服务端为 undefined/null → 面板不显示该行 */
+      winTile?: number | null;
+      /** 胡牌方式（自摸 / 点炮）；仅用于面板文案「胡牌张：X（自摸）」 */
+      winVia?: 'zimo' | 'ron' | null;
       rows: {
         seat: number;
         name: string;

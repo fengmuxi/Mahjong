@@ -39,6 +39,7 @@ Page({
     codeFromLink: false,
     errorText: '',
     errorShown: false,
+    submitting: false,
     bgOptions: BG_OPTIONS,
     bg: 'cloud',
     focusName: false,
@@ -96,10 +97,12 @@ Page({
   },
 
   onHide() {
+    this.clearSubmitTimer();
     room.detach(this);
   },
 
   onUnload() {
+    this.clearSubmitTimer();
     room.detach(this);
   },
 
@@ -218,8 +221,29 @@ Page({
     this.setData({ name: e.detail.value });
   },
 
+  /**
+   * 从任意输入里取出 6 位房间码：
+   *   · 正常手动输入 → 清洗掉非字母数字、转大写、最多 6 位；
+   *   · 直接粘贴整段分享文案（含中文，如「房间码：ABCDEF（…）」）→ 抠出其中连续 6 位房间码。
+   * 这样「复制分享信息 → 粘贴」就能自动识别正确的房间码，无需手动删中文。
+   */
+  cleanCode(raw) {
+    raw = String(raw || '').toUpperCase();
+    // 粘入的是整段带中文的分享文案，或长度超过 6 → 先尝试匹配连续 6 位房间码
+    if (raw.length > 6 || /[^0-9A-Z]/.test(raw)) {
+      const m = raw.match(/[0-9A-Z]{6}/);
+      if (m) return m[0];
+    }
+    return raw.replace(/[^0-9A-Z]/g, '').slice(0, 6);
+  },
+
   onCodeInput(e) {
-    this.setData({ code: e.detail.value });
+    this.setData({ code: this.cleanCode(e.detail.value) });
+  },
+
+  onCodePaste(e) {
+    const v = this.cleanCode((e.detail && e.detail.value) || '');
+    if (v) this.setData({ code: v });
   },
 
   onBgPick(e) {
@@ -252,18 +276,40 @@ Page({
       }
       this.setData({ errorShown: false });
       this.attempted = true;
+      this.beginSubmit();
       // pid = 本地稳定玩家 id：服务端先用 (pid, code) 找座位，找到就直接回原座位（掉线重进）
       room.connectAndSend({ t: 'join', code, name, pid: store.ensurePid() });
       return;
     }
     this.setData({ errorShown: false });
     this.attempted = true;
+    this.beginSubmit();
     room.connectAndSend({ t: 'create', name, variant: this.data.selectedVariant, pid: store.ensurePid() });
+  },
+
+  /**
+   * 提交（创建/加入）进入异步网络往返：按钮转 loading 并禁用，避免连点重复发，
+   * 也让人明确知道「请求已发出、正在连」。最多 8s 自动复位 —— 防止服务端无回包时永久转圈。
+   * 成功的后续是 room 侧 redirectTo 跳走（页面卸载，定时器随之清理）；失败走 onError / handleResumeFail 复位。
+   */
+  beginSubmit() {
+    this.clearSubmitTimer();
+    this.setData({ submitting: true });
+    this._submitTimer = setTimeout(() => this.setData({ submitting: false }), 8000);
+  },
+
+  clearSubmitTimer() {
+    if (this._submitTimer) {
+      clearTimeout(this._submitTimer);
+      this._submitTimer = null;
+    }
   },
 
   // ---------- 路由回调 ----------
 
   onError(reason) {
+    this.clearSubmitTimer();
+    this.setData({ submitting: false });
     this.showError(reason);
   },
 
@@ -296,6 +342,8 @@ Page({
     if (/^[0-9A-Z]{6}$/.test(room)) patch.code = room;
     this.setData(patch);
     this.renderSteps();
+    this.clearSubmitTimer();
+    this.setData({ submitting: false });
     this.toast(reason || '房间已失效，请重新加入');
   },
 

@@ -151,29 +151,66 @@
 
 /* ---------- 侧边按钮轨（rail） ---------- */
 /*
- * 左右各一列 36px 的浮层按钮，absolute 贴在 .game-main 两缘、垂直居中。
+ * 左右各一列 36px 的浮层按钮，absolute 贴在 .game-main 两缘。
  * **绝不占流宽、也绝不压画布**：fitCanvas 的 min(行宽 − 84, 行高×2) 保证画布两侧
  * 各留 ≥ 42px 空白；原生 canvas 合成层级高于 DOM，压在画布上的钮会被盖住点不到
  * （2026-10-17 实测 cover-view 都盖不住 canvas，详见 §10.8⑦）。
  * 手机横屏画布被行高卡住（宽有富余）→ 轨落在纯空白区；宽窗口画布吃宽度 → 让出的
  * 84px 正好归轨。骰子阶段整轨隐藏（diceShown，覆盖层已盖满全页）。
+ *
+ * 2026-10-25（用户报「对局中时右侧的菜单栏会和顶部的小程序 ui 重叠」）：
+ * **不再用 `top:50% + translateY(-50%)` 在整块 game-main 里垂直居中。**
+ * 原因：`navigationStyle=custom` 下微信胶囊（⋯ ○）由微信自己绘制，位置随状态栏走，
+ * 会**伸进 .game-main 顶部**；而手机横屏的 game-main 只有 215~230px 高，
+ * 6 个钮的轨却要 222px —— 居中后轨顶必然被顶进胶囊（iPhone 13 实测重叠 18px、
+ * SE 重叠 25.5px，`scripts/verify/railtop.cjs` 量的）。
+ * 现在改成：
+ *   · `top` 由 JS（syncRailTop）按**胶囊实测下沿 + 6px** 下发 —— 设备无关；
+ *   · `bottom: 2px`，于是这一列的高度 = 「胶囊下沿 .. 手牌区上沿」这段安全带；
+ *   · 按钮包在 .rail-inner 里，`margin: auto 0` 在带内居中；**带子装不下时
+ *     margin 自动归零**，配合 overflow-y:auto 从顶部可滚 —— 绝不溢出到胶囊或手牌上。
+ * （`.rail-inner` 的 margin-auto 居中比 `justify-content:center` 好在：后者在
+ *  overflow 时会把内容顶部推到不可滚区域，是 flex 的经典坑。）
  */
 .rail {
   position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+  /* 兜底 16px；真实值由 WXML 的 inline style（railTop）覆盖 */
+  top: 16px;
+  bottom: 2px;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  z-index: 5;
+  /*
+   * padding 是给 `.rail-badge` 留的：未读红点是 `top:-2px; right:-2px` 的**外凸**，
+   * 而 overflow 会在 padding box 处裁切 —— 不留余量就会把红点切掉一条。
+   * 3px 横向 + 2px 纵向足够包住 2px 的外凸；两条轨用 left/right:-1px 抵消，
+   * 按钮的视觉位置仍是距边 2px（-1 + 3 = 2）。
+   */
+  padding: 2px 3px;
+  /* 微信里 overlay 滚动条本来就不占位，这里只是给 Chromium 探针用 */
+  scrollbar-width: none;
+}
+
+.rail::-webkit-scrollbar {
+  display: none;
+}
+
+.rail-inner {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  z-index: 5;
+  /* 有余量 → 垂直居中；装不下 → auto 归零，从顶部可滚 */
+  margin: auto 0;
 }
 
 .rail-l {
-  left: 2px;
+  left: -1px;
 }
 
 .rail-r {
-  right: 2px;
+  right: -1px;
 }
 
 .rail-btn {
@@ -201,6 +238,14 @@
 .rail-btn.danger {
   color: #e07a6a;
   border-color: rgba(224, 122, 106, 0.5);
+}
+
+/* 局内「退出」钮：两字需缩小字号才能落进 36px 圆钮 */
+.rail-btn.exit {
+  font-size: 12px;
+  letter-spacing: 0;
+  color: #f0c674;
+  border-color: rgba(240, 198, 116, 0.55);
 }
 
 /* 未读红点：贴在聊天钮右上角 */
@@ -233,12 +278,29 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 2026-10-24：留出一圈给 Dim 露边。卡片改成 height:100%（见下）之后，
+     没有 padding 会把整块 Dim 完全挡住，看着不像弹层而像换了个页面。 */
+  padding: 8rpx;
   background: rgba(6, 10, 16, 0.55);
   border-radius: 12rpx;
 }
 
 .panel-card {
   width: min(72vw, 560px);
+  /*
+   * 2026-10-24（用户报「操作记录和聊天信息无法滚动显示」）：
+   * 这里原来只有 `max-height: 100%` —— 一条**不确定高度链**：
+   * .side-panel(absolute inset:0) → .panel-card(max-height:%) → .panel-body(flex:1)。
+   * Chromium 能把百分比 max-height 反推出确定高（脚本 scripts/verify/panelscroll_before.cjs
+   * 量过：旧写法在 Chromium 里照样溢出的），**微信渲染器推不出来**，
+   * 于是 flex:1 的 scroll-view 退化成「内容多高就多高」→ 永不溢出、划不动，
+   * 卡片自身的 overflow:hidden 再把多出来的部分切掉 → 下面的记录/消息永远看不到。
+   * ⚠ 本地无法复现微信那一侧，所以这条是**推断**而非实测；但改成 `height: 100%`
+   * 之后整条链与百分比彻底无关、高度由构造确定，是严格更强的写法，且与本仓库
+   * 既有约定一致：所有**能滚**的竖向 scroll-view（.settle-body 52vh / .emote-grid 320rpx /
+   * .chat-pop 200rpx）都是把高度直接写在 scroll-view 自己身上，没有一个是靠 flex 推的。
+   */
+  height: 100%;
   max-height: 100%;
   display: flex;
   flex-direction: column;
@@ -402,11 +464,15 @@
   overflow: hidden;
 }
 
+/*
+ * 消息区高度：`flex: 1` 占满卡片剩余空间（卡片已定高，见 .panel-card）。
+ * ⚠ 不要再加 `max-height: 300rpx` 这类小帽子 —— 那是「流内右列」时代的遗物，
+ * 弹层面板里它会把消息区压到 156px，卡片下半全空着。
+ */
 .chat-log,
 .log-list {
   flex: 1;
   min-height: 0;
-  max-height: 300rpx;
   padding: 8rpx 12rpx;
 }
 
@@ -468,6 +534,8 @@
 /* 快捷语 / 表情：scroll-view 才能真正滚动（普通 view 的 overflow 不生效） */
 .chat-pop {
   max-height: 200rpx;
+  /* 卡片改定高后，这两行属于「不被 flex 压缩」的部分：压扁了就没法看/没法点 */
+  flex-shrink: 0;
 }
 
 .chat-pop-row {
@@ -490,6 +558,8 @@
   gap: 6rpx;
   padding: 8rpx 10rpx;
   border-top: 2rpx solid rgba(255, 255, 255, 0.08);
+  /* 同 .chat-pop：输入行被 flex 压扁就没法看/没法点了 */
+  flex-shrink: 0;
 }
 
 .chat-ico {
@@ -601,16 +671,33 @@
 
 .controls {
   display: flex;
-  flex-wrap: wrap;
+  /*
+   * 2026-10-24：操作带改成**恒高的固定格子**（.action-bar，现 34px）后，这里仍是它的唯一
+   * 子节点、且是 flex item —— 不给死宽度会被压到 min-content（≈一个钮宽），整排竖着叠。
+   * `width:100%` 之后按钮才在行宽内排布。
+   * ⚠ `flex-wrap:nowrap` 是**硬约束**：这一带高度锁死（34px），一旦折行，多出来的一行
+   * 会被 .claim-row 的 align-items:flex-end 推向**上方**—— 那里是原生 canvas，
+   * 按钮直接看不见（§10.7：canvas 合成层永远在 DOM 之上）。宁可让钮横向压缩，
+   * 也绝不能折行。压缩由下方 .ctrl 的 flex-shrink + 图片 max-width:100% 完成。
+   */
+  flex-wrap: nowrap;
   justify-content: center;
+  /*
+   * 底对齐：报杠胶囊只有 25px、艺术钮 33px，默认 `stretch` 会让两者的**顶边**齐平
+   * （胶囊看着像浮在艺术钮上方）。统一贴底，视觉上才是「同一排按钮」。
+   */
+  align-items: flex-end;
+  width: 100%;
 }
 
 /*
  * 操作钮艺术图变体（2026-10-21 起，2026-10-23 补齐吃/暗杠/自摸/展示）：
  * 吃/碰/杠/胡/过 全走 CDN 位图（utils/uiart.js），图上再压一行小注（牌名/牌型）。
  * 设计约束：
- *   · 总高 ≈ 图高（小注用负边距压回图下缘）—— claim-mask 与手牌条同高，
- *     顶出去的部分会被原生 canvas 合成层挡住（真机实测 cover-view 都盖不住 canvas）；
+ *   · 总高 ≈ 图高（小注用负边距压回图下缘）—— 2026-10-24 起按钮搬进 .action-bar
+ *     （恒高格子，见下方 .action-bar；2026-10-25 由 44px 收到 34px）；
+ *     格子高度锁死，所以这一行**绝不能折行**（.controls 是 nowrap），
+ *     窄条时靠 flex-shrink 横向压缩。
  *   · display/margin 要压 app.wxss 的全局 `button{}` !important 四条；
  *   · 清单未就绪时类里没有 .art，整块退回上面的文字钮。
  */
@@ -621,7 +708,12 @@
   padding: 0;
   border: 0;
   background: transparent;
-  margin: 1px 4px !important;
+  /* 纵向不留边距：这 1px 让给「按钮与手牌之间的缝」（见 .claim-row 的 bottom:1px） */
+  margin: 0 4px !important;
+  /* 窄条时参与横向压缩（配合 .ctrl-img 的 max-width:100%） */
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 /*
  * 2026-10-23 用户报「操作按钮显示太大、底部信息显示不全」：图标原来用 rpx
@@ -632,22 +724,22 @@
  */
 .ctrl.art .ctrl-img {
   display: block;
-  width: 46px;
-  max-width: 92rpx;
-  height: 39px;
-  max-height: 78rpx;
+  width: 34px;
+  max-width: 68rpx;
+  height: 29px;
+  max-height: 58rpx;
   margin: 0 auto;
 }
 .ctrl.art .ctrl-cap {
   display: block;
-  margin: -6px auto 0;
+  margin: -5px auto 0;
   padding: 0 4px;
-  max-width: 54px;
+  max-width: 46px;
   border-radius: 999rpx;
   background: rgba(8, 12, 18, 0.72);
   color: #f2e6c8;
-  font-size: 9px;
-  line-height: 10px;
+  font-size: 8px;
+  line-height: 9px;
   text-align: center;
   white-space: nowrap;
   overflow: hidden;
@@ -656,22 +748,47 @@
 
 /*
  * 同屏 ≥7 个钮时的**全体小号**（2026-10-23）：7 个钮（吃 3 组 + 碰/杠/胡 + 过）按
- * 46px 排一行要 7×(46+8) = 378px > 375px 基准，必然换行并顶出 claim-mask（实测溢出
- * 16~21px）。**必须全体一起缩** —— 只缩吃钮会让同屏图标大小不一（用户报「有的显示
+ * 46px 排一行要 7×(46+8) = 378px > 375px 基准，一行放不下。
+ * **必须全体一起缩** —— 只缩吃钮会让同屏图标大小不一（用户报「有的显示
  * 更大有的更小」）。38px 时 7×(38+8) = 322px < 375px，一行放得下。
+ * ⚠ 2026-10-24 第五十轮起这一条更要守住：操作带高度锁死、.controls 是 nowrap，
+ * 一旦排不下就只能靠 flex-shrink 横向压缩（图标被挤窄），所以 compact 是
+ * 「保持图标大小一致」与「不被挤扁」之间的唯一手段。阈值按**总钮数**算
+ * （吃碰杠胡 + 报杠，见 applyControls），否则「4 报杠 + 3 暗杠」这种 7 钮会漏缩。
+ */
+/*
+ * 图片跟着按钮横向压缩（.controls 是 nowrap，窄条时靠 flex-shrink 分配）。
+ * 这条必须写在 `.ctrl.art .ctrl-img` 那条尺寸规则之后：同特异度 (0,2,0)，后来者胜，
+ * 把 rpx 上限换成「不超过按钮自己的盒子」，窄条时才压得下去（而不是被 overflow 切掉）。
+ */
+.ctrl.art .ctrl-img {
+  max-width: 100%;
+}
+
+/*
+ * 同屏 ≥7 个钮时的**全体小号**（2026-10-23 立，2026-10-25 随标准档一起缩）。
+ * 为什么必须全体一起缩：只缩吃钮会让同屏图标大小不一（用户报「有的显示更大有的更小」）。
+ * ⚠ 这里**不要再写 max-width** —— 那会把上面 `max-width:100%` 的压缩能力换回 rpx 上限，
+ * 窄条时图标就从「缩小」退化成「被裁掉两边」。
  */
 .ctrl.art.compact .ctrl-img {
-  width: 38px;
-  max-width: 76rpx;
-  height: 32px;
-  max-height: 64rpx;
+  width: 30px;
+  height: 25px;
+  max-height: 50rpx;
 }
 .ctrl.art.compact .ctrl-cap {
-  margin-top: -5px;
+  margin-top: -4px;
   padding: 0 3px;
-  max-width: 43px;
-  font-size: 8px;
-  line-height: 9px;
+  max-width: 38px;
+  font-size: 7px;
+  line-height: 8px;
+}
+
+/* 报杠胶囊的 compact 档：同屏 ≥7 钮时跟着缩（10.9.35「大小统一」的同一条要求） */
+.ctrl.declare.compact {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
 }
 
 /* 结算艺术字：面板标题上方的胜利/失败/平局（CDN；未就绪整块不渲染） */
@@ -682,34 +799,82 @@
   margin: 0 auto 6rpx;
 }
 
-/* ---------- 报杠行（2026-10-23） ----------
-   位置：手牌条正上方（WXML 里排在 .tray-stack 之前）。
-   **整行只在「本玩法支持报杠 + 确实有可报牌面」时渲染**（用户要求），其余情况不占高度；
-   显隐改变了操作区总高，所以 renderGame 把它并进 chromeKey，翻转那一帧才 fitCanvas 重量
-   —— 否则画布按旧行高定尺会溢出 .canvas-wrap（flex-end 对齐会往上顶、压到顶栏）。
-   可见时行高固定 56rpx：按钮数量变化（1~4 个）不改变行高，同一回合内不会来回抖。
-   多张可报时横向排开（真实上限 4 个：13 张手牌最多凑 4 组三张），一行放得下；
-   overflow:hidden 兜住极端情况，宁可裁一点也不要换行。
-   胶囊用**纯文字**（「报杠 四萬」）：24px 高的小钮里放书法体「杠」位图会糊成一团。 */
-.declare-row {
-  width: 100%;
-  height: 56rpx;
-  margin-bottom: 4rpx;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10rpx;
-  overflow: hidden;
+/* 结算面板「胡的是哪张」标注（标题下一行，金色小字，居中） */
+.settle-wintile {
+  margin: 2rpx 0 8rpx;
+  text-align: center;
+  font-size: 24rpx;
+  line-height: 1.3;
+  color: #f6e3a1;
+  letter-spacing: 1rpx;
 }
 
-.declare-btn {
-  height: 48rpx;
-  padding: 0 16rpx;
-  font-size: 22rpx;
+/* ---------- 操作带（2026-10-24 第五十轮） ----------
+   位置：`.g-status` 与 `.tray-stack`（手牌）之间。WXML 里的堆叠顺序（自上而下）：
+     .g-status → .action-bar（报杠 + 吃碰杠胡过 + 自摸/暗杠，恒占）→ .tray-stack（手牌）
+
+   **这一带恒占固定高度，按钮用 absolute 浮在里面**（见下方 .claim-row）。
+   为什么必须恒占：2026-10-24 用户报「按钮把牌面挤变形、牌桌忽大忽小」。
+   改前报杠行 / 吃碰杠胡行都是**按需占高度的流内行**，一出现就把 .board-overlay
+   撑高 44~73px；而画布尺寸由 #game-main 剩余高度反算
+   （fitCanvas：w = min(行宽−84, 行高×2)），iPhone 13 横屏实测画布宽
+   **526 → 436（−17%）**，两行同现是 **−29%** —— 整块牌桌连牌面一起缩，就是那个观感。
+   恒占之后：按钮出现/消失只是「空格住进按钮」，.board-overlay 总高恒定，
+   画布永远按同一个行高定尺，再也不跳。
+
+   为什么不「浮在画布上」：`<canvas type="2d">` 是原生组件、独立合成层，
+   永远压在 webview DOM 之上（§10.7 实测 fixed + z-index 都被盖还被穿透点击）。
+   浮层只剩两个落点：手牌（就是被否掉的半透明遮罩）或画布（不可能）。
+
+   高度的来处：`.ctrl.art` 标准档 图29 + 小注4 + 边距1 = 34px；compact 档 30px。
+   2026-10-25（用户报「操作栏和按钮缩小一点，多给牌桌留空间」）：从 44px 收到 **34px** ——
+   图 39→29、小注 4px、边距 1px = 34；compact 档 30px。手机上每 1px 高度 = 画布 2px 宽，
+   所以这 10px 换来画布宽 +20px（iPhone 13 横屏 438 → 458）。
+   高度仍是**常量**：按钮显隐不改布局，这是第五十轮修「忽大忽小」的前提，不能动。 */
+.action-bar {
+  position: relative;
+  width: 100%;
+  height: 34px;
+  flex-shrink: 0;
+}
+
+/*
+ * 按钮行：absolute 浮在 .action-bar 里，**不参与流内高度**。
+ * align-items:flex-end —— 图 + 小注整体贴着手牌，不往画布方向散。
+ * 没有 background：下面就是 .felt，按钮自带 app.wxss 的半透明底，足够辨识。
+ */
+.claim-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  /* 留 1px 缝：小注是深底胶囊，直接贴着手牌上沿会看着「糊在一起」。
+     内容高 33px（图29 + 小注净4）≤ 34 − 1，不溢出。 */
+  bottom: 1px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+/*
+ * 报杠钮（2026-10-23 起，2026-10-24 并入 .claim-row 的同一排）。
+ * 胶囊用**纯文字**（「报杠 四萬」）：34px 高的小钮里放书法体「杠」位图会糊成一团。
+ * 与服务端同一口径：`declareOptionsFor()` 要求「自己回合 + 无 pending」，
+ * 所以报杠与吃碰杠胡（响应窗口）永不同时出现；而报杠与暗杠/补杠/自摸**可能**
+ * 同时出现（都是自己回合）—— 这正是要把两行合成一行、而不是各占一行的原因。
+ */
+.ctrl.declare {
+  height: 25px;
+  padding: 0 12px;
+  font-size: 12px;
   line-height: 1;
   border-radius: 999rpx;
-  flex-shrink: 0;
-  /* 同样要压过 app.wxss 的 button{display:inline-block!important}，
+  /* 极端窄条（iPad 分屏）时跟着 .controls 一起横向压缩，文字省略号收尾 */
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* 压过 app.wxss 的 button{display:inline-block!important}，
      否则内容按行内基线排、上下留白不均 */
   display: inline-flex !important;
   align-items: center;
@@ -720,14 +885,12 @@
   white-space: nowrap;
 }
 
-/* 无可报牌面时整行不渲染（用户要求），因此这里不再需要灰底占位钮样式 */
-
-.declare-btn[disabled] {
+.ctrl.declare[disabled] {
   opacity: 0.45;
 }
 
-/* 操作区容器：手牌与遮罩共用同一块区域，遮罩绝对定位盖在手牌上。
-   min-height 与手牌条同高 —— 万一某状态下手牌没渲染，遮罩也要有落脚空间。
+/* 操作区容器：只剩手牌条一层（吃碰杠胡按钮 2026-10-24 起搬到上方的 .claim-row）。
+   min-height 与手牌条同高 —— 万一某状态下手牌没渲染，这块也有落脚空间。
    结算态整块不渲染（WXML overPhase），高度归还画布。 */
 .tray-stack {
   position: relative;
@@ -738,30 +901,70 @@
 }
 
 /*
- * 吃碰杠胡遮罩：半透明盖在手牌上，手牌仍可见（用户要看牌决定碰还是胡）。
- * 遮罩与手牌都是普通 DOM —— DOM 之间互相覆盖不受原生 canvas 限制（canvas 只挡在
- * 它自己的矩形上方，操作区已在画布下方）。
+ * 操作区容器：只剩手牌条一层（按钮已搬到上方恒高的 .action-bar）。
+ * min-height 与手牌条同高 —— 万一某状态下手牌没渲染，这块也有落脚空间。
+ * 结算态整块不渲染（WXML overPhase），高度归还画布。
  */
-.claim-mask {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  top: 0;
+.tray-stack {
+  position: relative;
+  width: 100%;
+  min-height: 68px;
   display: flex;
-  flex-direction: column;
-  align-items: center;
   justify-content: center;
-  background: rgba(8, 18, 13, 0.62);
 }
 
-/* 遮罩里的按钮自带外观（半透明底上要保证可辨识） */
+/* 纯文字钮（清单未就绪、art 回落时的吃碰杠胡过） */
 .controls button {
   height: 30px;
   line-height: 28px;
   font-size: 12px;
   padding: 0 10px;
   margin: 2px 3px;
+}
+
+/*
+ * 文字回落钮（CDN 操作钮位图未就绪 / 线上服务端清单没带 chi·peng·gang·hu·guo 时，
+ * 吃碰杠胡过统一走这里）。2026-10-25 用户报「过」显成小号错位红字、与其它钮不一样 ——
+ * 根因是此时 guo 位图没加载（运行中的旧服务端没带该键 / 客户端 7 天 UI 清单缓存过期前
+ * 没刷新），WXML 走 `wx:else` 裸文字，又只吃到 app.wxss 全局 button{} 的浅色兜底，
+ * 与艺术钮（金底书法图）画风割裂。这里把回落钮**拉到与艺术钮同高同对齐**，并分两级强调：
+ *   主操作（吃碰杠胡）金底深字；过(ghost)透明浅描边浅字 —— 都明确是「钮」，不再像裸文字。
+ * ⚠ display / margin 必须 !important：要压 app.wxss 全局 button{} 的 inline-block/margin:0 !important。
+ * ⚠ 排除 .declare（报杠胶囊有独立样式）与 .art（艺术钮自带图）。
+ */
+.controls .ctrl:not(.art):not(.declare) {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 30px;
+  padding: 0 14px;
+  margin: 2px 4px !important;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 8rpx;
+  background: #e6c14b;
+  color: #22200f;
+  font-weight: 700;
+  border: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+/* 过 / 自摸过：低强调「放弃」钮（与金底主操作区分），但仍是一个干净的胶囊，不裸文字 */
+.controls .ctrl:not(.art):not(.declare):not(.primary) {
+  background: transparent;
+  color: #e8efe9;
+  border: 2rpx solid rgba(255, 255, 255, 0.34);
+  font-weight: 400;
+}
+/* 同屏 ≥7 钮的紧凑档：回落钮跟着缩，与 .ctrl.art.compact（图 30×25）保持一行放得下 */
+.controls .ctrl:not(.art):not(.declare).compact {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 /*
@@ -832,10 +1035,6 @@
  */
 .tile-btn {
   box-shadow: 0 3px 7px rgba(0, 0, 0, 0.34), 0 1px 2px rgba(0, 0, 0, 0.26);
-}
-
-.tile-btn:active {
-  box-shadow: 0 5px 10px rgba(0, 0, 0, 0.42), 0 1px 3px rgba(0, 0, 0, 0.32);
 }
 
 /*
@@ -1079,6 +1278,16 @@
 
 .settle-body {
   max-height: 52vh;
+  /*
+   * 2026-10-27（用户报「结算弹框现在无法滚动和缩小」）：
+   * .layer-card 是 flex 列且 max-height:86vh；<scroll-view> 默认 min-height:auto 会**按内容撑住不缩**
+   * （微信 scroll-view 不套用 CSS overflow，不会像 Chromium 那样自动取 min-size:0）。
+   * 于是内容一多，卡片总高 > 86vh → overflow:hidden 把底部按钮/尾巴裁掉、scroll-view 也拿不到
+   * 确定高度而划不动。显式 min-height:0 让 flex 压得下去，scroll-view 得到确定的计算高即可滚动
+   * （与 .panel-body 的 flex:1 + min-height:0 同一手法，见 §10.9.62）。
+   */
+  min-height: 0;
+  flex-shrink: 1;
 }
 
 .settle-note {
@@ -1091,6 +1300,12 @@
   margin-top: 10rpx;
   font-size: 24rpx;
   color: #f6e3a1;
+}
+
+/* 解散结算表「总积分」列加粗（.total-col 仅在 lobby.wxss 定义，页级作用域不覆盖本页）。
+   红绿配色由全局 app.wxss 的 .pos/.neg 负责，此处只补加粗。 */
+.total-col {
+  font-weight: 700;
 }
 
 /*
@@ -1144,16 +1359,37 @@
     width: 104px;
   }
 
-  /* 侧边轨紧凑档：32px 直径，间距 6px */
-  .rail {
-    gap: 6px;
+  /*
+   * 侧边轨紧凑档（间距在 .rail-inner 上）。
+   *
+   * 2026-10-25 第五十二轮：32px/6px 在手机横屏装不下了 —— 轨顶改到「胶囊下沿」之后，
+   * 可用带只剩 game-main 高 − 胶囊侵入（≈15px）：
+   *   · iPhone 13 横屏 → 212px；
+   *   · iPhone SE 横屏 → 197px；
+   *   · 安卓横屏带 24px 状态栏 → 188px（状态栏把 100vh 里的内容也吃掉一截）。
+   * 6 个钮 × 32 + 5 × 6 = 222px 全都装不下 → 要滚 10~34px，「退出」「✕」被压在底部。
+   *
+   * 收紧到 28px/3px = 6×28 + 5×3 = **183px**：上面三档分别留 29 / 14 / 5px 余量，
+   * 都不需要滚动。为什么是 28 而不是 30：30px 时安卓那档还差 7px（会触发滚动、
+   * 底部按钮被切一角），而 28 与 30 在视觉上几乎无差别 —— 与其留一个「偶尔要滚」的
+   * 半吊子状态，不如一次收到能全覆盖。
+   * 「退出」两字在 28px 圆里用 11px 字号（22px 宽）刚好放得下。
+   * 再极端的窗口（< 340px 高）仍由 `.rail` 的 overflow-y:auto 兜底，
+   * 从顶部滚、**不会溢出到胶囊或手牌上**。
+   */
+  .rail-inner {
+    gap: 2px;
   }
 
   .rail-btn {
-    width: 32px !important;
-    height: 32px;
-    line-height: 30px;
-    font-size: 15px;
+    width: 28px !important;
+    height: 28px;
+    line-height: 26px;
+    font-size: 13px;
+  }
+
+  .rail-btn.exit {
+    font-size: 11px;
   }
 
   .rail-badge {
@@ -1194,7 +1430,6 @@
 
   .chat-log,
   .log-list {
-    max-height: none;
     padding: 4px 8px;
   }
 
@@ -1365,16 +1600,10 @@
     padding: 3px 4px;
   }
 
-  /* 报杠行紧凑档：28px 行高 / 24px 胶囊（行高固定，只有整行显隐会变，由 chromeKey 触发重量） */
-  .declare-row {
-    height: 28px;
-    margin-bottom: 3px;
-    gap: 5px;
-  }
-
-  .declare-btn {
-    height: 24px;
-    padding: 0 10px;
+  /* 操作带紧凑档：.action-bar 恒高不变（34px），只缩里面的钮 */
+  .ctrl.declare {
+    height: 22px;
+    padding: 0 8px;
     font-size: 11px;
   }
 
@@ -1452,5 +1681,11 @@
     font-size: 12px;
     padding: 0 10px;
     margin: 0 2px;
+  }
+  /* 回落钮同步收紧（主规则特异度更高，媒体查询里要同特异度重写才压得动） */
+  .controls .ctrl:not(.art):not(.declare) {
+    height: 28px;
+    padding: 0 10px;
+    font-size: 12px;
   }
 }

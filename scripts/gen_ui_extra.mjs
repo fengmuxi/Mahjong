@@ -3,13 +3,12 @@
  *   → `packages/server/public/ui/<group>/<key>.webp`
  *
  * 为什么单独一个脚本（2026-10-24）：
- *   `gen_ui_cdn.mjs` 的源目录是 `packages/client/src/assets/ui`，而 `packages/client`
- *   已在提交 104bfdc「Remove client-side assets and configuration files」整体删除 ——
- *   那个脚本现在**跑不了**（找不到源目录就 exit 1，但它 `fs.rmSync(OUT)` 在检查之前，
- *   半途退出会把 public/ui 整个清空，千万别在这种状态下跑它）。
- *   之后新增的 UI 贴图一律走本脚本：**只增不删**，源图放 `packages/miniapp/assets/ui/`。
+ *   原先的 `gen_ui_cdn.mjs` 源目录是 `packages/client/src/assets/ui`，而 `packages/client`
+ *   已在提交 104bfdc「Remove client-side assets and configuration files」整体删除，该脚本
+ *   已于同日删除。之后新增的 UI 贴图一律走本脚本：**只增不删**，源图放
+ *   `packages/miniapp/assets/ui/<group>/`。
  *
- * 编码参数与 `gen_ui_cdn.mjs` 保持一致（同一 Chromium、quality 0.92、imageSmoothing high），
+ * 编码参数与被删的 `gen_ui_cdn.mjs` 保持一致（同一 Chromium、quality 0.92、imageSmoothing high），
  * 这样新旧产物的画质口径一样；`SCALE` 默认 2（画布 backing store 最高 2x，避免高分屏发虚）。
  *
  * 用法：

@@ -1,8 +1,10 @@
 # 麻将 · 微信小程序端
 
-> 本目录是 web 版麻将的**小程序客户端**。规则与协议与 web 端共用同一份 `packages/shared`，
-> 服务端仍是 `packages/server` —— 小程序与网页可以**同桌对战**。
+> 本目录是麻将的**小程序客户端**。规则与协议来自 `packages/shared`，服务端仍是 `packages/server`。
 > 迁移方案与偏离说明见 `docs/integration/wechat-miniprogram.md`。
+>
+> ⚠ 2026-10-24：web 客户端（`packages/client`）已在提交 104bfdc 移除，`npm run build` /
+> `npm run dev:client` 一并删除 —— **小程序是目前唯一的对局入口**，「与网页同桌」不再适用。
 
 ---
 
@@ -10,12 +12,8 @@
 
 ```bash
 # ① 起服务端（仓库根目录，另开一个终端）
-npm run build     # 首次或改过 web 端后才需要：产出 packages/client/dist 供浏览器访问
 npm run start     # 默认监听 3130，终端会打印「局域网访问: http://192.168.x.x:3130」
 ```
-
-> 若在 WorkBuddy 内置终端里执行构建，需写成 `NODE_OPTIONS= npm run build`
-> （安全 shim 会拦截 vite 对 dist 的清理并超时）；普通终端不受影响。
 
 1. 微信开发者工具 → **导入项目** → 目录选 **`packages/miniapp/miniprogram`**（app.json 所在目录）。
    - 没有 AppID 就点「测试号」；已有 AppID 会自动写入 `project.config.json`。
@@ -128,8 +126,7 @@ button:not([size='mini']) { min-height: 40px; width: 184px;
 | 命令 | 作用 | 何时执行 |
 |---|---|---|
 | `npm run build:mp` | 把 `packages/shared` 编译成 CommonJS 产物 → `miniprogram/lib/shared/` | **改过 shared / 协议后必须跑** |
-| `npm run build` | 构建 web 客户端 `packages/client/dist` | 需要用浏览器加入同一房间验证时 |
-| `npm run typecheck` | 全仓类型检查 | 改 shared/server/client 后自检 |
+| `npm run typecheck` | 全仓类型检查 | 改 shared/server 后自检 |
 
 小程序端的页面/样式改动**不需要跑任何命令**，开发者工具编译即生效。
 

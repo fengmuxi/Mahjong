@@ -183,6 +183,11 @@ function handle(msg) {
       return;
     }
     case 'state': {
+      // 回桌成功 → 必须清掉「自动回桌中」标志。
+      // 否则它一旦置真就永不复位，此后**任何**一条 error（哪怕只是「窗口已过期」
+      // 这类普通业务错误）都会被下面判成「房间已失效」：清 token、断 socket、
+      // reLaunch 回首页 —— 把正在打牌的玩家硬踢出房间。
+      autoResume = false;
       g.lastState = msg;
       g.mySeat = msg.you;
       g.dealer = msg.dealer || 0;
@@ -200,6 +205,8 @@ function handle(msg) {
       return;
     }
     case 'game': {
+      // 同上：收到对局视图即代表回桌成功，必须清标志（见 case 'state' 的说明）。
+      autoResume = false;
       g.lastGameView = msg.view;
       g.mySeat = msg.view.mySeat;
       g.dealer = msg.view.dealer || 0;
@@ -318,6 +325,19 @@ module.exports = {
   },
   leaveRoom() {
     net.send({ t: 'leave' });
+    store.clearRoom();
+    this.resetChat();
+    net.setInRoom(false);
+    net.closeSocket();
+  },
+  /**
+   * 局内退出：先发 `exit` 让服务端把座位交托管打完（`send` 仅在 open 时投递，
+   * 对局中连接必为 open），再清本地房间态并断开。与 leaveRoom 同一「先发后断」节奏，
+   * 保证消息先送达服务端再关连接（服务端收到 exit 即删除本连接绑定，后续 onClose 不再处理）。
+   * 页面负责跳回首页（与 lobby.onLeaveConfirm 同构）。
+   */
+  exitGame() {
+    net.send({ t: 'exit' });
     store.clearRoom();
     this.resetChat();
     net.setInRoom(false);

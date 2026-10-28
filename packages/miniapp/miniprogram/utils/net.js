@@ -326,6 +326,10 @@ module.exports = {
     appHidden = false;
     if (inRoom && state !== 'open' && state !== 'connecting') {
       tries = 0;
+      // 必须**先 clearTimeout 再置空**：只把句柄丢掉的话，那条仍在倒计时的重连定时器
+      // 到期后照样会 openSocket()（它只挡 'open' 挡不住 'connecting'），
+      // 与这里新排的定时器叠成两条 WebSocket → 重复握手、重复发 resume。
+      if (reconTimer) clearTimeout(reconTimer);
       reconTimer = null;
       scheduleReconnect();
     }

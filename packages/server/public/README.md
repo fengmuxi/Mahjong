@@ -48,23 +48,28 @@ public/
 | `GET /ui/<group>/<key>.webp` | webp | 长缓存 immutable；只认已知组名单层 webp |
 | `GET /sound/<key>.mp3` | mp3 | 长缓存 immutable；支持 Range/206（iOS 播放器必需） |
 
-客户端（小程序 `utils/tileimg.js` 管牌面、`utils/uiart.js` 管 UI、web `src/tileart.ts` /
-`main.ts applyBgTexture`）拼 `${base}/<类>/<清单值>` —— **不感知分组结构**，分组调整不影响客户端代码。
+客户端（小程序 `utils/tileimg.js` 管牌面、`utils/uiart.js` 管 UI）拼 `${base}/<类>/<清单值>`
+—— **不感知分组结构**，分组调整不影响客户端代码。
 
 - **牌面唯一入口是 `tileimg.js`**：立牌走 `tileArt`（tXX），平放牌走 `faceArt(key, t)`
-  （faces 子清单，`FACE_CELL` 格子尺寸与 `gen_face_atlas.mjs` 同步）。`uiart.js` 已不再管牌面。
+  （faces 子清单；`FACE_CELL` 格子尺寸须与图集切割一致 —— 图集是 9×4 格 = 34 张）。
+  `uiart.js` 已不再管牌面。
 
 ## 生成与维护
 
 | 源 | 命令 | 产物 |
 |---|---|---|
-| `packages/client/src/assets/ui/<group>/*.png` | `npm run gen:ui-cdn` | `public/ui/<group>/*.webp` |
-| `packages/client/src/assets/tiles/*.png` | `npm run build:cdn-tiles` | `public/tiles/*.webp`（34 立牌）+ `public/tiles/face/*.webp`（4 平放牌，源自 `assets/face/`） |
-| `packages/client/src/assets/sound/*.mp3` | 手工拷贝（ASCII 名） | `public/sound/*.mp3` |
+| `packages/miniapp/assets/ui/<group>/*.png` | `node scripts/gen_ui_extra.mjs [group]` | `public/ui/<group>/*.webp` |
+| `public/sound/*.mp3` | 手工放入（ASCII 名） | `public/sound/*.mp3` |
+
+> ⚠️ **牌面（`public/tiles/`）没有可用的生成器了**：源图在 `packages/client/src/assets/tiles/`，
+> 随该包在提交 104bfdc 一并删除；`gen_cdn_tiles.mjs` / `gen_face_atlas.mjs` / `gen_tile_src.mjs`
+> 已于 2026-10-24 删除。**现有的 174 个 webp 就是唯一副本，勿删勿改**；
+> 要新增牌面只能从 git 历史恢复源图后重写生成器。
 
 - **换素材四连**（漏一步静默不生效）：换源图 → 跑对应 gen 命令 → 抬版本号
   （`TILES_VER` / `UI_VER` / `SOUND_VER`，缓存失效开关）→ 小程序 canvas 侧消费的键
   加进 `pages/game/game.js` 的 `uiart.preload` 白名单（牌面不用：`tileimg.preload` 已自动含 34 立牌 + 4 face）。
 - 版本号只是缓存失效开关；客户端网络清单**无条件覆盖**缓存，回调可能来两次须幂等。
-- 新增 UI 键必须归入既有分组（新组要同时改 `gen_ui_cdn.mjs` 的 `GROUPS`、
+- 新增 UI 键必须归入既有分组（新组要同时改 `scripts/gen_ui_extra.mjs` 的 `GROUPS`、
   `packages/server/src/index.ts` 的 `UI_GROUPS` 与本文台账）。

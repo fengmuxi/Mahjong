@@ -10,6 +10,9 @@
         class="step-item {{item.state}}"
         data-step="{{item.id}}"
         bindtap="onStepTap"
+        hover-class="tapped"
+        hover-stay-time="80"
+        hover-start-time="20"
       >
         <text class="step-dot">{{item.no}}</text>
         <text class="step-label">{{item.label}}</text>
@@ -26,12 +29,12 @@
         <view wx:if="{{step === 'mode'}}">
           <view class="home-head">创建房间，还是加入房间？</view>
           <view class="mode-cards">
-            <view class="mode-card" data-mode="create" bindtap="onPickMode">
+            <view class="mode-card" data-mode="create" bindtap="onPickMode" hover-class="tapped" hover-stay-time="80" hover-start-time="20">
               <text class="mode-icon">＋</text>
               <text class="mode-title">创建房间</text>
               <text class="mode-desc">开一桌新局，把分享卡片发给朋友</text>
             </view>
-            <view class="mode-card" data-mode="join" bindtap="onPickMode">
+            <view class="mode-card" data-mode="join" bindtap="onPickMode" hover-class="tapped" hover-stay-time="80" hover-start-time="20">
               <text class="mode-icon">→</text>
               <text class="mode-title">加入房间</text>
               <text class="mode-desc">输入朋友给的 6 位房间码</text>
@@ -49,6 +52,9 @@
               class="variant {{item.id === selectedVariant ? 'active' : ''}}"
               data-id="{{item.id}}"
               bindtap="onPickVariant"
+              hover-class="tapped"
+              hover-stay-time="80"
+              hover-start-time="20"
             >
               <view class="variant-name">{{item.name}}</view>
               <view class="variant-desc">{{item.desc}}</view>
@@ -86,16 +92,17 @@
             <input
               class="field-input code-input"
               value="{{code}}"
-              maxlength="6"
+              maxlength="40"
               placeholder="6 位房间码"
               focus="{{focusCode}}"
               bindinput="onCodeInput"
+              bindpaste="onCodePaste"
               bindconfirm="onSubmit"
             />
           </view>
           <view class="btn-row end">
             <button bindtap="onBack">上一步</button>
-            <button class="primary" bindtap="onSubmit">{{formSubmit}}</button>
+            <button class="primary" bindtap="onSubmit" loading="{{submitting}}" disabled="{{submitting}}">{{formSubmit}}</button>
           </view>
         </view>
 

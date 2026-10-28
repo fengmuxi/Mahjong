@@ -33,6 +33,9 @@
           class="seat {{item.empty ? 'empty' : ''}} {{item.ready ? 'ready' : ''}} {{item.self ? 'self' : ''}} {{item.swappable ? 'swappable' : ''}}"
           data-seat="{{item.seat}}"
           bindtap="onSeatTap"
+          hover-class="tapped"
+          hover-stay-time="80"
+          hover-start-time="20"
         >
           <view class="seat-no">{{item.wind}}家<text wx:if="{{item.host}}"> · 房主</text></view>
           <view class="seat-name">{{item.name}}
@@ -41,7 +44,7 @@
           </view>
           <view class="seat-state {{item.offline ? 'offline' : ''}}">{{item.state}}</view>
           <view class="seat-tip {{item.tipClass}}" wx:if="{{item.tip}}">{{item.tip}}</view>
-          <button class="seat-kick" wx:if="{{item.kickable}}" data-seat="{{item.seat}}" data-bot="{{item.bot}}" catchtap="onSeatKick">{{item.kickLabel}}</button>
+          <button class="seat-kick" wx:if="{{item.kickable}}" data-seat="{{item.seat}}" data-bot="{{item.bot ? '1' : '0'}}" catchtap="onSeatKick" hover-stop-propagation>{{item.kickLabel}}</button>
         </view>
       </view>
 
