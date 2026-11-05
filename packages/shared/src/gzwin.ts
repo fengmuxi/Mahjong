@@ -12,7 +12,9 @@
  *      手作将：将牌 = {精, 胡牌张}，或精对作将）/ 特殊牌型 / 精归位（精当本张用，视为德国）/
  *      配将平胡（差将自摸摸精硬凑将，只按平胡结算不加分精吊分）。**点炮不允许平胡**——
  *      有精时点炮胡只能走精吊 / 德国（精归位）/ 杠开 / 其他特殊牌型；
- *   4. **德国 = 手上无精**（§6.4），德中德 = 德国 + 大牌型（×4）。
+ *   4. **德国 = 手上无精**（§6.4），德中德 = 德国 + 大牌型（×4）。2026-11-05 收紧：
+ *      「精代牌」（精吊分支里用 `gzDecomposeWild` 补面子）把精当万能牌用，不算精归位，
+ *      即使将牌是同面精对也**不判德国**，只按精吊 +5（见 §6.4 / §6.5）。
  */
 
 import type { Meld, Tile } from './index.ts';
@@ -45,7 +47,8 @@ export interface GzWinFacts {
    */
   jingPairPlain: boolean;
   /** 德国：手上无精（§6.4）、精归位（§6.5③，+8），或将牌 = 明面精 + 同面本张成对
-   *  （此时与精吊同时成立：+5 +8 = 13，2026-10-18 口径） */
+   *  且面子未用精代牌（此时与精吊同时成立：+5 +8 = 13，2026-10-18 口径；
+   *  2026-11-05 收紧：靠精代牌凑面子只算精吊 +5，不算德国 +8） */
   german: boolean;
   /** 牌型底分（§6.1；多牌型并存取最高） */
   patternBase: number;
@@ -319,12 +322,17 @@ export function gzAnalyzeWin(
   let jingdiaoRuns = false;
   let jingdiaoTrips = false;
   let jingPairPlain = false;
-  /** 将牌 = 明面精 + 同面本张成对 → 精吊与德国同时成立（+5 +8 = 13，2026-10-18 口径） */
+  /**
+   * 将牌 = 明面精 + 同面本张成对 **且面子全部按本张标准分解** → 精吊与德国同时成立
+   * （+5 +8 = 13，2026-10-18 口径；2026-11-05 收紧：靠精代牌凑面子时不置位）。
+   */
   let jingdiaoOnFace = false;
   const kinds = jingKinds(jing);
   if (hasJing && !small7 && setsNeeded >= 0) {
     // 从 counts 里摘掉将牌的两张再分解其余；返回该分解是「全刻子」还是「含顺子」
-    const tryPair = (a: Tile, b: Tile): 'runs' | 'trips' | false => {
+    /** 面子分解结果；usedWild = 这组面子是否靠「精代牌」才凑得出来 */
+    type PairDecomp = { r: 'runs' | 'trips'; usedWild: boolean } | false;
+    const tryPair = (a: Tile, b: Tile): PairDecomp => {
       if (counts[a] < 1 || counts[b] < 1) return false;
       if (a === b && counts[a] < 2) return false;
       counts[a] -= 1;
@@ -332,32 +340,43 @@ export function gzAnalyzeWin(
       // 面子分解：先按「精作本张」的标准分解（保持既有判定与底分档不变）；
       // 不行时按 2026-10-23 用户口径，允许**剩下的精代任意牌**去补面子缺口。
       // 例：七条八条八条九条九条 + 二筒二筒，将牌{二筒,五萬} → 另一张二筒当七条补第二副七八九。
+      // ⚠ usedWild 判的是「这组面子能否精全按本张分解」，**与最终取 runs / trips 哪个底分档无关**：
+      //    标准分解只要存在一条，就是精归位（§6.4）；不能因为大七对档位恰好走了通配就关掉德国。
       const rest = [...counts];
       let wild = 0;
       for (const k of kinds) {
         wild += rest[k];
         rest[k] = 0;
       }
+      const standardRuns = gzDecompose(counts, setsNeeded, false, true);
+      const standardTrips = noChi && gzDecompose(counts, setsNeeded, false, false);
       let r: 'runs' | 'trips' | false = false;
-      if (gzDecompose(counts, setsNeeded, false, true)) r = 'runs';
-      else if (wild > 0 && gzDecomposeWild(rest, setsNeeded, wild, true)) r = 'runs';
+      let usedWild = false;
+      if (standardRuns) {
+        r = 'runs';
+      } else if (wild > 0 && gzDecomposeWild(rest, setsNeeded, wild, true)) {
+        r = 'runs';
+        usedWild = true;
+      }
       if (r === 'runs' && noChi) {
-        if (gzDecompose(counts, setsNeeded, false, false)) r = 'trips';
+        if (standardTrips) r = 'trips';
         else if (wild > 0 && gzDecomposeWild(rest, setsNeeded, wild, false)) r = 'trips';
       }
+      if (standardRuns || standardTrips) usedWild = false;
       counts[a] += 1;
       counts[b] += 1;
-      return r;
+      return r ? { r, usedWild } : false;
     };
     // ① 将牌 = {精, 胡牌张}
     if (winTile != null) {
       for (const kind of kinds) {
-        const r = tryPair(kind, winTile);
-        if (r) {
-          if (r === 'trips') jingdiaoTrips = true;
+        const d = tryPair(kind, winTile);
+        if (d) {
+          if (d.r === 'trips') jingdiaoTrips = true;
           else jingdiaoRuns = true;
-          // 将牌是「明面精 + 同面本张」成对（单吊精恰好摸上它的本张）→ 精吊与德国同时成立
-          if (kind === winTile) jingdiaoOnFace = true;
+          // 将牌是「明面精 + 同面本张」成对（单吊精恰好摸上它的本张）→ 精吊与德国同时成立。
+          // ⚠ 2026-11-05：面子若靠精代牌才凑得出，说明仍有精被当万能牌用，不是精归位 → 不判德国。
+          if (kind === winTile && !d.usedWild) jingdiaoOnFace = true;
         }
       }
     }
@@ -368,12 +387,12 @@ export function gzAnalyzeWin(
     for (const k1 of kinds) {
       for (const k2 of kinds) {
         if (pre[k1] < 1 || pre[k2] < 1 || (k1 === k2 && pre[k1] < 2)) continue;
-        const r = tryPair(k1, k2);
-        if (r) {
-          if (r === 'trips') jingdiaoTrips = true;
+        const d = tryPair(k1, k2);
+        if (d) {
+          if (d.r === 'trips') jingdiaoTrips = true;
           else jingdiaoRuns = true;
-          // 同面精对（明面精 + 它的本张）→ 同样精吊 + 德国同时成立
-          if (k1 === k2) jingdiaoOnFace = true;
+          // 同面精对（明面精 + 它的本张）→ 同样精吊 + 德国同时成立；精代牌路径除外（同上）
+          if (k1 === k2 && !d.usedWild) jingdiaoOnFace = true;
         }
       }
     }
@@ -399,7 +418,8 @@ export function gzAnalyzeWin(
     }
   }
   // 七对含精对（{精,精}，两张都在暗牌里）也算精吊（§6.5）；
-  // 七对里的精对必然是「明面精 + 同面本张」→ 同样精吊 + 德国同时成立
+  // 七对里的精对必然是「明面精 + 同面本张」→ 同样精吊 + 德国同时成立。
+  // 七对不用通配（isSmallSevenPairs 无 wild），因此不受 2026-11-05 的精代牌收紧影响。
   const jingPair7 = small7 && kinds.some((k) => counts[k] >= 2);
   if (jingPair7) jingdiaoOnFace = true;
   const jingdiao = hasJing && (jingdiaoRuns || jingdiaoTrips || jingPair7);
@@ -440,8 +460,9 @@ export function gzAnalyzeWin(
   else if (small7 || sls) patternBase = Math.max(GZ_CONFIG.patternBase.small7, GZ_CONFIG.patternBase.shisanlan);
   else if (pinghu || jingdiaoRuns || jingPairPlain) patternBase = GZ_CONFIG.patternBase.pinghu;
 
-  // 德国（§6.4 + §6.5③ + 2026-10-18 口径）：手上无精、精归位，
-  // 或将牌是「明面精 + 同面本张」成对（精吊与德国同时成立）
+  // 德国（§6.4 + §6.5③ + 2026-10-18 口径 / 2026-11-05 收紧）：手上无精、精归位，
+  // 或将牌是「明面精 + 同面本张」成对且面子无精代牌（精吊与德国同时成立）。
+  // 「精代牌」把精当万能牌补面子缺口 → 既不是手上无精、也不是精归位，德国不成立。
   const german = !hasJing || guiwei || jingdiaoOnFace;
   // 德中德需看其余三家有没有精牌——胡型分析拿不到别家信息，由引擎判定（见 gzIsDezhongde）
 

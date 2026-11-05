@@ -7,7 +7,7 @@
  *   副露×信息盘、手牌摞×各方、出界检查）。
  */
 const path = require('path');
-const MP = path.resolve(__dirname, '../../packages/miniapp/miniprogram');
+const MP = path.resolve(__dirname, '../../packages/minigame/game');
 
 // ---------- mock canvas / ctx ----------
 function mockCtx(canvas) {
@@ -57,7 +57,7 @@ global.wx = {
 global.document = { createElement: (tag) => mockCanvas(300, 150) };
 
 // ---------- 载入 table.js（根 package.json 是 type:module → .js 走 ESM；
-// 用 vm + CJS 包装加载，自定义 require 递归解析 miniapp 内相对路径） ----------
+// 用 vm + CJS 包装加载，自定义 require 递归解析 minigame 内相对路径） ----------
 const fs = require('fs');
 const vm = require('vm');
 const cache = {};
@@ -187,7 +187,6 @@ const wrap = (name, cls) => {
 };
 ['drawRivers', 'drawHandStacks', 'drawCenter', 'drawJingHighlight'].forEach((n) => wrap(n, n));
 // drawMelds(melds, slot) / drawRevealHand(view, seat)：把槽位编进类别名，跨槽相擦才看得清
-wrap('drawMelds', 'meld');
 const _origDrawMelds = Table.prototype.drawMelds;
 Table.prototype.drawMelds = function (melds, slot) {
   if (process.env.DBG) console.log('    [meld] slot=' + slot + ' n=' + (melds || []).map((m) => m.tiles.length).join('/'));
@@ -239,15 +238,14 @@ function river(start, n) { const a = []; for (let i = 0; i < n; i++) a.push((sta
 
 const views = {
   nanchang_playing: makeView({
-    rivers: [river(0, 14), river(3, 20), river(7, 22), river(11, 18)],
-    // 满额压力：左右各 4 组（侧列两列排满）；底边 3 组（对局中折不了行，
-    // 4 组+左右都 4 组窗口仅 416px 放不下 516px，属实战不可达的极端牌，见 table.js 注释）
-    melds: [
-      [{ type: 'chi', tiles: [0, 1, 2] }, { type: 'peng', tiles: [5, 5, 5] }, { type: 'chi', tiles: [12, 13, 14] }],
-      [{ type: 'peng', tiles: [5, 5, 5] }, { type: 'gang', tiles: [9, 9, 9, 9] }, { type: 'chi', tiles: [12, 13, 14] }, { type: 'chi', tiles: [12, 13, 14] }],
-      [{ type: 'chi', tiles: [12, 13, 14] }],
-      [{ type: 'peng', tiles: [5, 5, 5] }, { type: 'gang', tiles: [9, 9, 9, 9] }, { type: 'chi', tiles: [12, 13, 14] }, { type: 'chi', tiles: [12, 13, 14] }],
-    ],
+    rivers: [river(0, 22), river(3, 24), river(7, 22), river(11, 24)],
+    // 几何压力样本：四家各 4 组副露，和四家满容量牌河同时存在。
+    melds: [0, 1, 2, 3].map(() => [
+      { type: 'peng', tiles: [5, 5, 5] },
+      { type: 'gang', tiles: [9, 9, 9, 9] },
+      { type: 'chi', tiles: [12, 13, 14] },
+      { type: 'chi', tiles: [12, 13, 14] },
+    ]),
     counts: [10, 9, 11, 12],
   }),
   gz_playing: makeView({
@@ -267,14 +265,14 @@ const views = {
     reveal: [river(0, 14), river(3, 14), river(7, 14), river(11, 14)],
     // 接近真机结算局（2026-10-21 截图）：左右两家各 4 组副露（侧列排满两列），
     // 底边也 4 组（横排折两行），牌河接近满载（18~22 张，压 cap）
-    rivers: [river(0, 14), river(3, 20), river(7, 22), river(11, 18)],
-    melds: [
-      [{ type: 'chi', tiles: [0, 1, 2] }, { type: 'peng', tiles: [5, 5, 5] }, { type: 'chi', tiles: [12, 13, 14] }, { type: 'chi', tiles: [12, 13, 14] }],
-      // 单家上限 4 组（14 张手牌递推：4×3+将 ≤14；5 组需 15 张不可达）
-      [{ type: 'peng', tiles: [5, 5, 5] }, { type: 'gang', tiles: [9, 9, 9, 9] }, { type: 'chi', tiles: [12, 13, 14] }, { type: 'chi', tiles: [12, 13, 14] }],
-      [],
-      [{ type: 'peng', tiles: [5, 5, 5] }, { type: 'gang', tiles: [9, 9, 9, 9] }, { type: 'chi', tiles: [12, 13, 14] }, { type: 'chi', tiles: [12, 13, 14] }],
-    ],
+    rivers: [river(0, 22), river(3, 24), river(7, 22), river(11, 24)],
+    // 最大摊牌压力：四家各 4 组（每家实际最多 4 组），并同时展示 14 张结算手牌。
+    melds: [0, 1, 2, 3].map(() => [
+      { type: 'peng', tiles: [5, 5, 5] },
+      { type: 'gang', tiles: [9, 9, 9, 9] },
+      { type: 'chi', tiles: [12, 13, 14] },
+      { type: 'chi', tiles: [12, 13, 14] },
+    ]),
     counts: [0, 0, 0, 0],
     lastDiscard: { tile: 20, from: 0 },
   }),
@@ -345,12 +343,19 @@ function checkSnapshot(label, tiles, table, canvas, withBlit) {
   // HUD 逻辑矩形（= 屏幕位置，不投影）
   const hud = {
     tags: (table.tagRects || []).filter(Boolean).map((r) => [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }]),
-    disk: [[{ x: 480, y: 226 }, { x: 800, y: 226 }, { x: 800, y: 422 }, { x: 480, y: 422 }]],
+    disk: [[{ x: 540, y: 230 }, { x: 740, y: 230 }, { x: 740, y: 318 }, { x: 540, y: 318 }]],
+    actionBar: table.view && table.view.phase !== 'over'
+      ? [[{ x: 465, y: 444 }, { x: 1025, y: 444 }, { x: 1025, y: 506 }, { x: 465, y: 506 }]]
+      : [],
   };
   const pairs = [
     ['drawRivers', 'tags', '牌河×铭牌'],
     ['drawRivers', 'disk', '牌河×信息盘'],
+    ['drawRivers', 'actionBar', '牌河×操作栏'],
     ['drawRivers', 'wall', '牌河×牌墙'],
+    ['meld', 'actionBar', '副露×操作栏'],
+    ['drawHandStacks', 'actionBar', '手牌摞×操作栏'],
+    ['tags', 'actionBar', '铭牌×操作栏'],
     ['drawRivers', 'meld', '牌河×副露'],
     // 副露跨槽：底边副露（y430）可能与侧边副露列（排到 548）在角落相擦
     ['meld', 'meld', '副露×副露(跨槽)'],
@@ -400,42 +405,37 @@ function checkSnapshot(label, tiles, table, canvas, withBlit) {
   const centerTiles = groups.drawCenter || [];
   for (const q of centerTiles) {
     const b = quadBounds(q);
-    ok(b.x0 >= 480 - 1 && b.x1 <= 800 + 1 && b.y0 >= 226 - 1 && b.y1 <= 422 + 1,
+    ok(b.x0 >= 540 - 1 && b.x1 <= 740 + 1 && b.y0 >= 230 - 1 && b.y1 <= 318 + 1,
       `中心立精出盘 [${b.x0.toFixed(0)},${b.y0.toFixed(0)},${b.x1.toFixed(0)},${b.y1.toFixed(0)}]`);
   }
   console.log(`  跨类相交检查完成（${hits} 处未过）`);
   /*
-   * 4) 牌河叠压必须真的叠起来，且「露出比例」在设计区间里（2026-10-22 用户要的
-   *    「下一张盖住上一张、连成一个平面」）。同家内部按记录顺序取**同列相邻**两张：
-   *      · Δx < 1  → 换行（行优先下同一列的上下两张）
-   *      · 露出比例 = Δy / (牌高·d) —— rect 分支绕牌心缩 d，d 在比值里正好抵消，
-   *        理论值就是 `dy/牌高`（27/44≈0.61、21/34≈0.62），这里给 [0.53, 0.72] 的窗。
+   * 4) 牌河同列相邻两排必须完整显示、不互相遮挡。
+   * 使用屏幕中心 x 匹配，容许反投影造成的逻辑坐标微差。
    */
   for (const [name, group] of Object.entries(groups)) {
-    if (!name.startsWith('drawRivers#')) continue; // 只查牌河（结算也走同一套局内牌河）
+    if (!name.startsWith('drawRivers#')) continue;
     let checked2 = 0;
-    // 同一列的判据要用**屏幕中心 x**：side 槽位经 unprojTileX 反补偿后，逻辑 x 会随
-    // 行变（d(y) 不同），但屏幕上的列位是不动的。
-    // 牌河整块传了统一投影比 k（2026-10-22）→ 屏幕中心 x 用 k，不能用逐张 d
     const kOf = (t) => (t.tilt && t.tilt.k) || PROJ_BASE + PROJ_SPAN * ((t.y + t.h / 2) / H);
     const scx = (t) => W / 2 + (t.x + t.w / 2 - W / 2) * kOf(t);
     for (let i = 1; i < group.length; i++) {
       const cur = group[i].t;
       if (!cur) continue;
-      // 往回找**同一列**的上一张（行优先下它们隔了 cols 张，不是紧邻记录）
       let prev = null;
       for (let j = i - 1; j >= 0; j--) {
         const p = group[j].t;
         if (p && Math.abs(scx(p) - scx(cur)) < 1.5 && Math.abs(p.y - cur.y) > 1) { prev = p; break; }
       }
       if (!prev) continue;
-      const dy = Math.abs(cur.y - prev.y);
-      // 露出比例 = Δy / (牌高 · k)：行距和牌高都按块常数 k 缩，比值 = dy/牌高
-      const ratio = dy / (prev.h * kOf(prev));
+      const ratio = Math.abs(cur.y - prev.y) / (prev.h * kOf(prev));
       checked2++;
-      ok(ratio >= 0.53 && ratio <= 0.72, `${name} 叠压露出比例异常 ${ratio.toFixed(3)}（Δy=${dy.toFixed(1)} h=${prev.h}）`);
+      // 2026-11-04「牌压着牌没有间隙」：行距 = 牌高 − 8~10（上下 48/58 = 0.827、
+      // 左右 36/44 = 0.818，设计叠压盖住贴图底部空区）→ 阈值 0.80 仍拦行坍缩。
+      ok(ratio >= 0.8, `${name} 相邻两排遮挡（露出比例 ${ratio.toFixed(3)}）`);
     }
-    if (checked2 === 0 && group.length > 8) ok(false, `${name} 没查到任何一行叠压（牌河还是分块的）`);
+    // 单行牌河没有纵向相邻对。2026-11-03 十字布局起同排相邻牌**设计内小幅叠压**
+    // （列距 39/48 < 牌边 44/58，用户「牌压着牌」定稿），逐对不相交断言随之作废；
+    // 出界（检查 2）与跨类 SAT（检查 3）仍全覆盖。
   }
   // 4) 墙缓存确实生效（仅第二帧：主画布应收到整屏 blit）
   if (withBlit && (groups.wall || []).length > 0) {

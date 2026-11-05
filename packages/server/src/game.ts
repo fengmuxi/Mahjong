@@ -162,8 +162,11 @@ export class Game {
   chaozhuang = false;
   /** 报杠（§8.5）：牌面 → 展示者（该三张冻结：不可打、不进吃碰，可参与胡牌判定） */
   declaredKongs: Map<Tile, { seat: number }> = new Map();
-  /** 上宝倍数累计（确认口径 2026-10-18）：本局内打出的明面正精 / 明面副精张数；
-   *  倍数 = 1 + 正 + 副（1 = 无；明面正精/明面副精全场各只有 1 张，max = 3）。
+  /** 上宝倍数累计（口径修订 2026-11-04，原 2026-10-18）：本局内打出与明面正精/明面副精
+   *  同面的牌的张数——按牌面判定：翻出的那张物理正精随海底预留、不入流通（applyGzFlip），
+   *  同面其余副本照常摸打（正精面剩 3 张、副精面 4 张可被打出）。
+   *  倍数 = 1 + 正 + 副，按打出次数累计、**不设上限**（原「全场各仅一张 → max = 3」系推定失误，
+   *  已废止，见 docs/rules/ganzhou.md §5.7 与修订记录）。
    *  铭牌展示 + 胡牌分结算（赢家收分 / 付分者出分都乘自己的倍数） */
   baoZheng = [0, 0, 0, 0];
   baoFu = [0, 0, 0, 0];
@@ -677,6 +680,10 @@ export class Game {
     const c = tileCounts(this.hands[seat]);
     if (c[tile] !== 3) throw new Error('手里没有恰好三张');
     this.declaredKongs.set(tile, { seat });
+    // 报杠必须进日志（2026-11-04 修）：客户端的声音（playActionSounds）、中心动画、
+    // 操作记录三处都以 view.log 为唯一数据源。以前这里只 return 事件，于是"自己报杠有声音、
+    // 别人报杠完全无感"。与 discard/chi/peng/gang/hu 同口径。
+    this.pushLog('declare', seat, [tile]);
     return [{ kind: 'declare', seat, tile }];
   }
 
@@ -701,7 +708,8 @@ export class Game {
     if (idx < 0) throw new Error('手里没有这张牌');
     hand.splice(idx, 1);
     this.rivers[seat].push(tile);
-    // 上宝倍数（确认口径 2026-10-18）：打出明面正精 / 明面副精 → 本局倍数各 +1（胡牌分与铭牌用）
+    // 上宝倍数（口径修订 2026-11-04）：打出与明面正精/明面副精同面的牌 → 本局倍数各 +1，
+    // 按打出次数累计、不设上限（docs/rules/ganzhou.md §5.7）（胡牌分与铭牌用）
     if (this.gz && this.gzJing) {
       if (tile === this.gzJing.zheng[0]) this.baoZheng[seat]++;
       else if (tile === this.gzJing.fu[0]) this.baoFu[seat]++;
@@ -1450,8 +1458,9 @@ export class Game {
       s === 'shisanlan' && info.qixing ? '七星十三烂' : shapeLabel(s),
     );
     if (this.gz && info.gz) {
-      // 赣州（§6.5/6.6 + 2026-10-18 口径）：精吊 +5、德国 +8（无精 / 精归位 /
-      // 明面精与本张同面成对）；精吊德国同成立时两项都算（+13）；配将平胡都不加
+      // 赣州（§6.5/6.6 + 2026-10-18 口径 / 2026-11-05 收紧）：精吊 +5、德国 +8
+      // （无精 / 精归位 / 明面精与本张同面成对**且面子无精代牌**）；同立时两项都算（+13）；
+      // 靠精代牌（gzwin.ts usedWild）凑面子的胡型只算精吊、不给德国；配将平胡都不加
       if (info.gz.jingdiao) labels.push('精吊');
       if (info.gz.german) labels.push('德国');
       if (info.dezhongde) labels.push('德中德');
@@ -1554,7 +1563,8 @@ export class Game {
   }
 
   /** 胡牌分（§6.1/6.4/6.6 + 2026-10-18 口径）：牌型基础分（小七13 / 大七27 / 十三烂13 /
-   *  七星32 / 平胡4）；有精吊 +5、德国 +8（可同时成立：明面精与本张同面成对时 +13）；
+   *  七星32 / 平胡4）；有精吊 +5、德国 +8（可同时成立：将牌同面精对且面子无精代牌时 +13；
+   *  2026-11-05 收紧：靠精代牌凑面子只给精吊 +5，不给德国 +8）；
    *  有精但既非精吊也非德国的**特殊牌型**在基础分上 −5（配将平胡维持平胡底分，不套此公式）；
    *  杠开 +8 叠加、德中德 ×4。**天和 / 地和固定 40**，不参与精吊/德国/杠开/德中德演算 */
   private gzPatternScore(wi: WinInfo): number {

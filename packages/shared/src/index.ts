@@ -70,6 +70,13 @@ export interface SeatPlayer {
   isBot?: boolean;
   /** 托管中（房主添加的机器人恒为 true；玩家手动开启或掉线也为 true） */
   auto?: boolean;
+  /** 头像 id（如 'a05'）；空串/缺省=未选，由服务端按 pid 确定性随机分配 */
+  avatar?: string;
+  /**
+   * 局内暂离（2026-11-05）：本局由托管代打、**座位保留**，人回到房间页等本局结束。
+   * 与 `connected:false`（掉线）和 `exited`（彻底离场、本局结束回收座位）都不同。
+   */
+  away?: boolean;
 }
 
 export type ClaimKind = 'hu' | 'chi' | 'peng' | 'gang';
@@ -127,8 +134,16 @@ export interface GzJingView {
   revealed: boolean;
 }
 
-/** 对局操作类型（日志用） */
-export type GameActionKind = 'discard' | 'chi' | 'peng' | 'gang' | 'angang' | 'bugang' | 'hu' | 'draw';
+/**
+ * 对局操作类型（日志用）。
+ *
+ * `declare` = 报杠（把三张同牌摊出来声明，§8.5，仅赣州玩法开启）。
+ * 2026-11-04 补：以前 `declareKong` **只发事件、不写日志**，于是它只对执行者自己可见 ——
+ * 别人报杠时既没有中心动画、操作记录里也没有那一行，更没有语音/音效。
+ * 日志是客户端声音与动画的唯一数据源（见 game.js playActionSounds、table.js 中心动画），
+ * 任何"局内动作"都必须进日志，否则各端表现就会按"是不是自己"分叉。
+ */
+export type GameActionKind = 'discard' | 'chi' | 'peng' | 'gang' | 'angang' | 'bugang' | 'declare' | 'hu' | 'draw';
 
 /** 一条对局操作记录 */
 export interface GameActionLog {
@@ -206,8 +221,17 @@ export interface GameView {
   connected: boolean[];
   /** 四家是否由服务端代打（机器人 / 手动托管 / 掉线，均为 true）——供牌桌「托管中」标记 */
   auto: boolean[];
+  /** 四家是否已就绪（结算展示期间牌桌铭牌显示「已准备/未准备」；服务端填充，老服务端缺省 undefined） */
+  ready?: boolean[];
+  /**
+   * 四家是否「已退出本局」（2026-11-05 `quit`）：座位在、由托管代打，但人已回房间页。
+   * 铭牌优先显示「已退出」，与普通托管区分开；老服务端缺省 undefined。
+   */
+  away?: boolean[];
   /** 座位索引的玩家名（服务端填充） */
   names: string[];
+  /** 四家头像 id（服务端按座位填充；空串=未选，客户端回退风位圆） */
+  avatars?: string[];
   /** 房间累计积分（按座位，服务端填充） */
   totals: number[];
   /** 房主座位（服务端填充） */
@@ -247,13 +271,13 @@ export interface DealerRoll {
 
 export type ClientMsg =
   /** 创建房间：variant = 玩法 id（缺省南昌）；pid = 本地稳定玩家 id（可选，老客户端不发） */
-  | { t: 'create'; name: string; variant?: string; pid?: string }
+  | { t: 'create'; name: string; variant?: string; pid?: string; avatar?: string }
   /**
    * 加入房间：`pid` 是**本地生成、跟随全局的玩家 id**（2026-10-23）。
    * 服务端先用 (pid, code) 找座位 —— 找到就**直接续上该座位**（哪怕房间在对局中 / 已满），
    * 找不到才按普通加入处理。这样掉线 / 换设备 / 令牌丢失后，从首页重新输入房间号也能回到原座位。
    */
-  | { t: 'join'; code: string; name: string; pid?: string }
+  | { t: 'join'; code: string; name: string; pid?: string; avatar?: string }
   | { t: 'resume'; token: string }
   | { t: 'ready'; ready: boolean }
   | { t: 'leave' }
@@ -265,6 +289,16 @@ export type ClientMsg =
    *   中途不可凭 token / pid 重连回原座位（resume / join 均会被拒）。
    */
   | { t: 'exit' }
+  /**
+   * 退出本局（2026-11-05，局内顶栏 ‹ 的唯一语义）：**任何人**都可以点。
+   * · 座位保留、`auto=true` → 服务端托管把本局打完，另外三家完全不受影响；
+   * · 自己收到一条 `state`（`playing=true`）→ 客户端回房间页等本局结束；
+   * · 本局结束后座位仍在，可继续准备打下一局（`startGame` 会清掉 `away`）。
+   *
+   * 与 `exit` 的区别：`exit` = 彻底离场（本局结束回收座位、回首页）；
+   * `quit` = 暂离一局（保座、回房间页）。局内 UI 只发 `quit`。
+   */
+  | { t: 'quit' }
   /** 请求换位：目标座位空闲 → 直接换；有人 → 向对方发起交换请求 */
   | { t: 'swap'; toSeat: number }
   /** 应答换位请求（被请求方） */
@@ -302,12 +336,20 @@ export type ClientMsg =
   /** 托管开关：开启后服务端代你掷骰 / 应答 / 出牌，可随时取消 */
   | { t: 'setAuto'; auto: boolean }
   /**
-   * 应用级心跳（微信小程序专用）。
+   * 应用级心跳（微信客户端专用）。
    * `wx.connectSocket` 只能发文本/二进制消息，发不了 WebSocket 协议层的 ping 帧，
-   * 因此小程序端用它替代 ws 级 ping/pong：服务端收到即刷新存活时间并回 `{t:'pong'}`。
+   * 因此客户端用它替代 ws 级 ping/pong：服务端收到即刷新存活时间并回 `{t:'pong'}`。
    * web 端仍走 ws 级 ping，两条探活路径并存，互不影响。
    */
-  | { t: 'ping' };
+  | { t: 'ping' }
+  /**
+   * 语音身份上报（2026-11-03 二期，座位级语音指示的映射源头）。
+   * wx.joinVoIPChat 的事件只带 openid，而对局身份是匿名 token+pid —— 客户端在
+   * 加入语音成功 / 开关麦后上报自己的 openid 与静音态，服务端挂到座位的 Player 上
+   * 并向全房间广播 `{t:'voice', map}`。openid 是客户端自报、仅用于回显映射，
+   * **不参与任何权限判断**（信任模型见 docs/integration/wechat-voice.md）。
+   */
+  | { t: 'voiceId'; openid: string; muted: boolean; ear?: boolean };
 
 /** 赣州冲关 · 单组精分（§5.2 新口径：12 张精两两配对为 6 组，逐组独立冲关） */
 export interface GzJingComboRow {
@@ -410,6 +452,12 @@ export type ServerMsg =
       dealerRolls: DealerRoll[];
       /** 首局庄家是否已定（false 时不允许开局） */
       dealerDecided: boolean;
+      /**
+       * 房间正处于对局进行中（2026-11-05）。
+       * 正常 lobby 视图恒为 false/缺省；只有「局内退出回房间」的人会收到 true ——
+       * 此时他本地在房间页，但本局还在别人手里打着，准备/换位都要等本局结束。
+       */
+      playing?: boolean;
     }
   /** 有人请求与你换位（被请求方收到） */
   | { t: 'swapAsk'; from: number; fromName: string }
@@ -454,4 +502,11 @@ export type ServerMsg =
   | { t: 'emote'; from: number; target: number; emote: string }
   /** 应用级心跳应答（见 ClientMsg 的 `ping`） */
   | { t: 'pong' }
+  /**
+   * 语音座位映射广播（2026-11-03 二期）：座位→(openid, muted)。
+   * 三类时机下发：① 任何人的 voiceId 上报 / 座位移除 / 换位导致映射变化时全房广播；
+   * ② 新连接拿到视图（create / join / resume 回桌）后**定向补发**当前映射；
+   * ③ 机器人与未上报者不进 map —— map 为空数组 = 房内暂无人开语音。
+   */
+  | { t: 'voice'; map: { seat: number; openid: string; muted: boolean }[] }
   | { t: 'error'; reason: string };

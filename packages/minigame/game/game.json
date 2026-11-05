@@ -1,0 +1,8 @@
+{
+  "deviceOrientation": "landscape",
+  "networkTimeout": {
+    "request": 10000,
+    "connectSocket": 10000,
+    "downloadFile": 30000
+  }
+}

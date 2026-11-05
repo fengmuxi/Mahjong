@@ -15,3 +15,13 @@ packages/miniapp/miniprogram/project.private.config.json
 
 # 本地验证 harness 的输出（scripts/verify/*.cjs）
 .recover-tmp/
+
+# ZCode 工具的本地 plans 缓存（会话级，与项目无关）
+.zcode/
+
+# 服务端本地配置：含微信 appsecret（WX_MG_SECRET 等），只走环境变量或本机文件，
+# 不进版本库（mahjong.config.json 自身注释的约定）。首次部署参照 setup-and-run.md §6.1。
+mahjong.config.json
+
+# 截图产物
+.screenshots/

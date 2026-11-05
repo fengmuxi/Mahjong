@@ -1,12 +1,12 @@
 /**
- * 生成「增量 UI 贴图」：`packages/miniapp/assets/ui/<group>/<key>.png`
+ * 生成「增量 UI 贴图」：`assets/ui/<group>/<key>.png`
  *   → `packages/server/public/ui/<group>/<key>.webp`
  *
  * 为什么单独一个脚本（2026-10-24）：
  *   原先的 `gen_ui_cdn.mjs` 源目录是 `packages/client/src/assets/ui`，而 `packages/client`
- *   已在提交 104bfdc「Remove client-side assets and configuration files」整体删除，该脚本
- *   已于同日删除。之后新增的 UI 贴图一律走本脚本：**只增不删**，源图放
- *   `packages/miniapp/assets/ui/<group>/`。
+ *   已在提交 104bfdc 整体删除。之后新增的 UI 贴图一律走本脚本：**只增不删**，源图放
+ *   `assets/ui/<group>/`。2026-11-05 小程序端移除后，源目录从
+ *   `packages/miniapp/assets/ui` 迁到仓库根 `assets/ui`（与客户端解耦）。
  *
  * 编码参数与被删的 `gen_ui_cdn.mjs` 保持一致（同一 Chromium、quality 0.92、imageSmoothing high），
  * 这样新旧产物的画质口径一样；`SCALE` 默认 2（画布 backing store 最高 2x，避免高分屏发虚）。
@@ -23,7 +23,9 @@ const require = createRequire('C:/Users/86187/.workbuddy/binaries/node/workspace
 const { chromium } = require('playwright');
 
 const ROOT = 'E:/86187/Desktop/Mahjong';
-const SRC = path.join(ROOT, 'packages/miniapp/assets/ui');
+// 源图目录（中立路径）：原 packages/miniapp/assets/ui 已随小程序端整体移除。
+// 新增增量贴图时把 <group>/<key>.png 放到这里再跑本脚本。
+const SRC = path.join(ROOT, 'assets/ui');
 const OUT = path.join(ROOT, 'packages/server/public/ui');
 const QUALITY = 0.92;
 const DEFAULT_SCALE = 2;

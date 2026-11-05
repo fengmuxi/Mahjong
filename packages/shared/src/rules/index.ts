@@ -11,11 +11,16 @@ import { ganzhouRules } from './ganzhou.ts';
 
 export * from './types.ts';
 
-/** 内置玩法表 */
-export const VARIANTS: Record<string, RuleSet> = {
+/**
+ * 内置玩法表。
+ * 用无原型对象承载（2026-11-04 审计 S2）：普通字面量会被 `__proto__`/`constructor`/
+ * `toString` 这类原型键命中 —— 客户端传 `variant: "__proto__"` 时 `VARIANTS[v]` 返回
+ * `Object.prototype`（真值），绕过「未知玩法」校验后取 `.meta` 直接抛 TypeError。
+ */
+export const VARIANTS: Record<string, RuleSet> = Object.assign(Object.create(null), {
   nanchang: nanchangRules,
   ganzhou: ganzhouRules,
-};
+});
 
 /** 默认玩法（缺省与向后兼容均指向南昌） */
 export const DEFAULT_VARIANT = 'nanchang';

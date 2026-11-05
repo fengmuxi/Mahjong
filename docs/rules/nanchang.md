@@ -308,7 +308,7 @@
 ## 10. 校验
 
 - `npm run typecheck`：**tsc --noEmit 全量类型检查，必须零报错**（改动共享层 / 服务端 / 客户端后必跑）。
-- `npm run build:mp`：shared → 小程序 `lib/shared/` 编译通过（验证协议层引用无断裂）。
+- `npm run build:mg`：shared → 小游戏 `lib/shared/` 编译通过（验证协议层引用无断裂）。
 - **算分人工校验**：改动 §6.2 后，按表中的典型行在真机对局复算——庄自摸 / 闲自摸 / 庄胡闲炮 / 闲胡闲炮 / 闲胡庄炮五种付款口径各挑 1~2 行，并核对**四家净变动之和为 0**。
 - **自动化测试与回归脚本已于 2026-10-15 移除**（`scripts/test_*.ts`、`scripts/smoke*.mjs`、`score_regression.py` 及 `npm test`/`npm run smoke`）。改动请以本文档为准人工复核。
 - 任何算分改动：先改本文档 §6.2 → 同步 `packages/shared/src/score.ts` → `typecheck` + 人工复算 §6.2 全表。

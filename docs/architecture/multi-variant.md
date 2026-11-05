@@ -115,7 +115,7 @@ interface GameView {
 1. **默认注入**：`Game` 增加可选入参 `rules?: RuleSet`，缺省 `getRules('nanchang')`。所有现有调用点不传 → 行为不变。
 2. **旧导出保留**：`tiles.ts / wincheck.ts / score.ts / wall.ts` 的现有函数**不删除**，仅被 `rules/nanchang.ts` 引用；外部 import 路径不变。
 3. **协议只增字段**：`variant` / `wild` 为新增可选字段；未提供时按南昌处理。
-4. **验收门禁**：每期结束必须 `npm run typecheck` 零报错 + `npm run build:mp` 通过 + 按两份规则文档人工复算关键场景。
+4. **验收门禁**：每期结束必须 `npm run typecheck` 零报错 + `npm run build:mg` 通过 + 按两份规则文档人工复算关键场景。
 5. **回退开关**：若某期引入回归，直接不传 `rules` 即回到 P0 前的南昌路径（可即时回滚）。
 
 ---
@@ -199,7 +199,7 @@ interface GameView {
   天和/地和严格定义；补牌=牌墙尾倒数 S 墩；一炮多响按逆时针；全包含杠分+精分且帮另两家出；
   胡牌分与精分分开算；德中德=德国+任意牌型+其余三家无精；抄庄；精墩前缘为海底。14 条确认记录 +
   9 条待确认事项见 `docs/integration/ganzhou.md` §7/§8。
-- **校验**：`npm run typecheck` + `npm run build:mp` 零报错，并按 `docs/integration/ganzhou.md` §6 的人工验证清单逐条试玩（含 §7.4 结算示例算式复核）。自动化测试已于 2026-10-15 移除。
+- **校验**：`npm run typecheck` + `npm run build:mg` 零报错，并按 `docs/integration/ganzhou.md` §6 的人工验证清单逐条试玩（含 §7.4 结算示例算式复核）。自动化测试已于 2026-10-15 移除。
 
 > 遗留：① `ganzhou` 的 `score.settle`（南昌形状）为显式抛错占位，`settle` 泛型化（P6）后可移除；
 > ② 南昌补牌公式是否也改为「牌墙尾倒数 S 墩」待用户确认（`docs/rules/nanchang.md` §3 现记为「从摸牌处逆时针数 S 列」）；

@@ -7,11 +7,12 @@
     "dev:server": "tsx watch packages/server/src/index.ts",
     "start": "tsx packages/server/src/index.ts",
     "typecheck": "tsc --noEmit",
-    "build:mp": "node scripts/mp_build_shared.mjs"
+    "build:mg": "node scripts/mp_build_shared.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",
     "@types/ws": "^8.5.12",
+    "lamejs": "^1.2.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "ws": "^8.18.0"

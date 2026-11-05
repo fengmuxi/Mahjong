@@ -1,6 +1,6 @@
 # 服务端静态资源台账（public/）
 
-> 2026-10-23 第二十三轮（face 平放牌归位牌面大类）。所有资源**不进小程序代码包**（体检红线：主包 < 1.5MB、
+> 2026-10-23 第二十三轮（face 平放牌归位牌面大类）。所有资源**不进客户端代码包**（体检红线：主包 < 1.5MB、
 > 图+音 ≤ 200KB），一律走 CDN 清单 + 长缓存静态路由。
 
 ## 目录结构与分组
@@ -48,7 +48,7 @@ public/
 | `GET /ui/<group>/<key>.webp` | webp | 长缓存 immutable；只认已知组名单层 webp |
 | `GET /sound/<key>.mp3` | mp3 | 长缓存 immutable；支持 Range/206（iOS 播放器必需） |
 
-客户端（小程序 `utils/tileimg.js` 管牌面、`utils/uiart.js` 管 UI）拼 `${base}/<类>/<清单值>`
+客户端（`game/utils/tileimg.js` 管牌面、`game/utils/uiart.js` 管 UI）拼 `${base}/<类>/<清单值>`
 —— **不感知分组结构**，分组调整不影响客户端代码。
 
 - **牌面唯一入口是 `tileimg.js`**：立牌走 `tileArt`（tXX），平放牌走 `faceArt(key, t)`
@@ -59,7 +59,7 @@ public/
 
 | 源 | 命令 | 产物 |
 |---|---|---|
-| `packages/miniapp/assets/ui/<group>/*.png` | `node scripts/gen_ui_extra.mjs [group]` | `public/ui/<group>/*.webp` |
+| `assets/ui/<group>/*.png` | `node scripts/gen_ui_extra.mjs [group]` | `public/ui/<group>/*.webp` |
 | `public/sound/*.mp3` | 手工放入（ASCII 名） | `public/sound/*.mp3` |
 
 > ⚠️ **牌面（`public/tiles/`）没有可用的生成器了**：源图在 `packages/client/src/assets/tiles/`，
@@ -68,7 +68,7 @@ public/
 > 要新增牌面只能从 git 历史恢复源图后重写生成器。
 
 - **换素材四连**（漏一步静默不生效）：换源图 → 跑对应 gen 命令 → 抬版本号
-  （`TILES_VER` / `UI_VER` / `SOUND_VER`，缓存失效开关）→ 小程序 canvas 侧消费的键
+  （`TILES_VER` / `UI_VER` / `SOUND_VER`，缓存失效开关）→ 客户端 canvas 侧消费的键
   加进 `pages/game/game.js` 的 `uiart.preload` 白名单（牌面不用：`tileimg.preload` 已自动含 34 立牌 + 4 face）。
 - 版本号只是缓存失效开关；客户端网络清单**无条件覆盖**缓存，回调可能来两次须幂等。
 - 新增 UI 键必须归入既有分组（新组要同时改 `scripts/gen_ui_extra.mjs` 的 `GROUPS`、

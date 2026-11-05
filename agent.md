@@ -2,19 +2,18 @@
 
 > 给 AI agent 的项目指引。读完即可安全改动代码；**改动规则/算分前先读本文「铁律」一节**。
 >
-> ⚠️ **2026-10-24 起：web 客户端（`packages/client`）已在提交 104bfdc 移除**，
-> `npm run build` / `dev:client` 与全部面向网页的脚本一并删除，**微信小程序（`packages/miniapp`）
-> 是唯一对局入口**。下文 §5.5–5.10 仍是 web 客户端时代的细节（DOM 结构 / CSS 选择器 /
-> `client/src/table.ts`），其中的**规则与几何结论大多仍成立**，但文件路径与选择器已失效；
-> 小程序侧对应实现见 `packages/miniapp/miniprogram/utils/table.js` 与
-> `docs/integration/wechat-miniprogram.md` §10.9.x。引用这些章节时先确认路径。
+> ⚠️ **web 客户端（`packages/client`，提交 104bfdc）与微信小程序端（`packages/miniapp`）均已移除**，
+> **微信小游戏（`packages/minigame`）是当前唯一对局入口**。下文 §5.5–5.10 仍是 web 客户端
+> 时代的细节（DOM 结构 / CSS 选择器 / `client/src/table.ts`），其中的**规则与几何结论大多仍
+> 成立**，但文件路径与选择器已失效；现行实现见 `packages/minigame/game/utils/table.js` 与
+> `docs/integration/wechat-minigame.md` §14.x。引用这些章节时先确认路径。
 
 ## 1. 这个项目是什么
 
-一个**微信小程序麻将**对战游戏：4 人同房间、WebSocket 实时同步、带掷骰翻精/补杠等仪式动画与 Canvas 桌面渲染。单 TypeScript 仓库，规则已**冻结**（见 `docs/rules/nanchang.md`）。
+一个**微信小游戏麻将**对战游戏：4 人同房间、WebSocket 实时同步、带掷骰翻精/补杠等仪式动画与 Canvas 桌面渲染。单 TypeScript 仓库，规则已**冻结**（见 `docs/rules/nanchang.md`）。
 
-- **多玩法**：架构上按「玩法 = 一份 `RuleSet`」插拔（`packages/shared/src/rules/`），已实现**南昌麻将**；小程序首页第 ① 步从玩法注册表列出可选玩法，创建房间时按 id 选定并整局沿用。
-- 运行模型：一个 Node 进程托管 ①`/ws` WebSocket 对局服务 ②`/api` 牌面与 UI 贴图清单及静态资源；玩家从微信小程序端连同一房间码。
+- **多玩法**：架构上按「玩法 = 一份 `RuleSet`」插拔（`packages/shared/src/rules/`），已实现**南昌麻将**；小游戏首页第 ① 步从玩法注册表列出可选玩法，创建房间时按 id 选定并整局沿用。
+- 运行模型：一个 Node 进程托管 ①`/ws` WebSocket 对局服务 ②`/api` 牌面与 UI 贴图清单及静态资源；玩家从微信小游戏端连同一房间码。
 - 权威来源优先级：**`docs/rules/<玩法>.md`（规则与算分）> `packages/shared`（代码实现）> 前端（仅渲染）**。前端不持有任何规则逻辑。
 
 ## 2. 技术栈
@@ -23,9 +22,9 @@
 |---|---|
 | 语言 | TypeScript（ESM，`"type": "module"`），`tsconfig` 开 `strict` |
 | 服务端运行时 | Node + `ws`（WebSocket），用 `tsx` 直接跑 `.ts`（见 `npm run start`） |
-| 前端 | 微信小程序（`packages/miniapp`），原生 Canvas 渲染；web 客户端已于提交 104bfdc 移除 |
-| 共享层 | `packages/shared/src` 被 server 与 miniapp 共同依赖 |
-| 校验 | `npm run typecheck`（tsc --noEmit）+ `npm run build:mp` + 按规则文档人工复算/试玩（自动化测试已于 2026-10-15 移除） |
+| 前端 | 微信小游戏（`packages/minigame`），原生 Canvas 渲染；web 与小程序客户端均已移除 |
+| 共享层 | `packages/shared/src` 被 server 与 minigame 共同依赖 |
+| 校验 | `npm run typecheck`（tsc --noEmit）+ `npm run build:mg` + 按规则文档人工复算/试玩（自动化测试已于 2026-10-15 移除） |
 
 注意：源码大量使用**带 `.ts` 扩展名的相对导入**（`import ... from './index.ts'`），依赖 `tsconfig` 的 `allowImportingTsExtensions` 与 `tsx` 的解析能力；`tsc` 仅做 `--noEmit` 类型检查，不输出。
 
@@ -47,18 +46,19 @@ packages/
   server/src/
     index.ts             HTTP + WebSocket 入口、房间管理、协议分发、定时器（响应窗口/托管/掷骰仪式）、换位
     game.ts              对局引擎（状态机：行牌/响应窗口/轮庄/流局/结算）
-  miniapp/miniprogram/      微信小程序端（**当前唯一对局入口**，2026-10-24 起）
-    app.js / app.json       入口与路由（home / lobby / game 三页）
+  minigame/game/            微信小游戏端（**当前唯一对局入口**）
+    game.js / game.json     入口（薄）与横屏配置
     utils/table.js          牌桌渲染（1280×640 画布、牌墙环、四向指示键、结算摊牌）
     utils/tileimg.js        牌面加载（/api/tiles 清单 + CDN，失败静默回退矢量）
     utils/uiart.js          UI 贴图加载（/api/ui 清单 + CDN，同上）
-    utils/room.js           连接与房间状态机（resume / exit / 心跳）
-    lib/shared/             `npm run build:mp` 产物（CJS），勿手改
+    src/nav.js              连接与房间状态机（resume / exit / 心跳 + 场景切换）
+    src/scenes/             home / lobby / game 三场景
+    lib/shared/             `npm run build:mg` 产物（CJS），勿手改
 scripts/                             开发辅助脚本，非测试门禁
-  mp_build_shared.mjs       shared → miniprogram/lib/shared（`npm run build:mp`）
-  gen_ui_extra.mjs          增量 UI 贴图：miniapp/assets/ui/<group>/*.png → server/public/ui/，用完抬 UI_VER
+  mp_build_shared.mjs       shared → minigame/game/lib/shared（`npm run build:mg`）
+  gen_ui_extra.mjs          增量 UI 贴图：assets/ui/<group>/*.png → server/public/ui/，用完抬 UI_VER
   variant_settle_server.mjs 纯 WebSocket 自动打完一局赣州，验服务端结算窗口
-  verify/                   小程序渲染层 harness：geomcheck / handfit / meldgap / pagelayout / shots_art
+  verify/                   小游戏渲染层 / 规则回归：geomcheck / gzgerman / noisetoast
 docs/
   README.md                          文档索引与命名规范
   rules/nanchang.md                  南昌规则（v1.19 冻结稿）——实现与验收唯一规则来源
@@ -98,8 +98,8 @@ npm run typecheck    # tsc --noEmit：改 shared/server 后必须零报错
 - **准备阶段可换位**：点其他座位 → 空位直接搬、有人则发请求需对方同意。`applySeatSwap()` 必须在改座位的同时同步 **`binding`（ws→seat）与 `tokens`（token→seat）**，否则 `resume`/广播会按旧座位找人而失联；**房主身份（`hostSeat`）与 `nextDealer` 随人走**，不随座位号。
 
 ### 5.3 WebSocket 协议（JSON，`t` 区分类型）
-- 客户端→服务端 `ClientMsg`：`create`(带可选 `variant` = 玩法 id) `join` `resume`(凭 token 重连) `ready` `leave` `swap`(请求换位 `toSeat`) `swapRespond`(应答换位 `accept`) `rollDice` `discard` `claim` `pass` `selfGang` `zimo` `nextRound` `abort`(房主解散对局) `dissolve`(房主解散牌桌) `chat`(局内聊天 `text`，服务端按 `CHAT_TEXT_MAX` 截断) `emote`(定向互动表情 `target` + `emote` id) `addBot`(房主大厅加机器人，见 §5.11) `removeBot`(移除机器人 `seat`) `setAuto`(托管开关 `auto`) `declareKong`(赣州报杠 `tile`，见 §5.10)。
-- 服务端→客户端 `ServerMsg`：`state`(大厅，含 `variant` 与 `pendingSwap`) `swapAsk`(有人请求与你换位) `game`(个性化视图 `GameView`) `settle`(结算面板) `dissolved`(最终积分) `event`(播报) `chat`(聊天广播 `seat`/`name`/`text`) `emote`(互动表情广播 `from`/`target`/`emote`，**发全房**) `error`。
+- 客户端→服务端 `ClientMsg`：`create`(带可选 `variant` = 玩法 id) `join` `resume`(凭 token 重连) `ready` `leave` `exit`(彻底离场) `quit`(**退出本局**：保座+托管代打，人回房间页，见 §5.12) `swap`(请求换位 `toSeat`) `swapRespond`(应答换位 `accept`) `rollDice` `discard` `claim` `pass` `selfGang` `zimo` `nextRound` `abort`(房主强制结束本局；**局内 UI 已不再发**，仅兼容老客户端) `dissolve`(房主解散牌桌) `chat`(局内聊天 `text`，服务端按 `CHAT_TEXT_MAX` 截断) `emote`(定向互动表情 `target` + `emote` id) `addBot`(房主大厅加机器人，见 §5.11) `removeBot`(移除机器人 `seat`) `setAuto`(托管开关 `auto`) `declareKong`(赣州报杠 `tile`，见 §5.10)。
+- 服务端→客户端 `ServerMsg`：`state`(大厅，含 `variant`/`pendingSwap`/`playing`) `swapAsk`(有人请求与你换位) `game`(个性化视图 `GameView`) `settle`(结算面板) `dissolved`(最终积分) `event`(播报) `chat`(聊天广播 `seat`/`name`/`text`) `emote`(互动表情广播 `from`/`target`/`emote`，**发全房**) `error`。
 - **玩法 id 一定由服务端归一**：`create` 里 `getRules(msg.variant).meta.id`——未知 id 静默回退默认玩法（南昌），客户端/SDK 传脏值不会炸。
 - 每个玩家收到**个性化 `game` 视图**（只看见自己手牌 `myTiles`、其他家仅张数 `counts`），翻精骰掷出前 `jingPi/jingFu` 为 `null`（防剧透）。
 
@@ -153,8 +153,8 @@ npm run typecheck    # tsc --noEmit：改 shared/server 后必须零报错
 `node scripts/verify/meldgap.cjs`（副露间距探针，改牌河/副露几何后跑）。
 > ⚠️ 原先的 `mobile_shot` / `mobile_interact` / `mobile_orient` / `mobile_clip_check` /
 > `mobile_exit_btn_check` / `mobile_orient_shot` 已随 web 客户端删除（2026-10-24）——
-> 它们加载的页面不复存在。小程序侧改用 `scripts/verify/*.cjs`（注入真实 `table.js` 到 Chromium）
-> 与 `.recover-tmp/geomshot.mjs`，以及微信开发者工具里的真机预览。
+> 它们加载的页面不复存在。小游戏侧改用 `scripts/verify/geomcheck.cjs`、`scripts/mg_geomcheck.cjs`
+> 与微信开发者工具里的真机预览。
 > ⚠️ 强制横屏下整页被逻辑旋转 90°，`page.screenshot()` 拿到的是**物理竖屏**帧缓冲（图是躺倒的）。
 > 要看「人眼视角」就换成等价的横屏视口，并**临时注入 `html.force-landscape body{transform:none}`** —— 只把旋转抵消掉；
 > **不能摘 `force-landscape` 类**（会把该作用域的规则一起丢掉，预览就假了），也**不能自己 dispatch resize**（`scheduleSync()` 会按 JS 变量把类加回来）。
@@ -217,23 +217,34 @@ npm run typecheck    # tsc --noEmit：改 shared/server 后必须零报错
 - **节奏**：机器人用 `MAHJONG_BOT_MS` / `MAHJONG_BOT_MS_MAX`（出牌，区间内**随机**）、`MAHJONG_BOT_CLAIM_MS` / `MAHJONG_BOT_CLAIM_MS_MAX`（吃碰杠胡响应，原来零延迟）；人类托管 / 掉线沿用 `MAHJONG_AUTO_MS`（固定，越快越好，不拟人）。随机值的「这次决策」由 `actionSeq + 座位 + 类型` 标识并记在 `room.botThink`，重复推进只重挂剩余时长——否则重连/旁人应答会把思考时间一遍遍重置。
 - 大厅座位卡：机器人不可换位（恒 `ready`）、房主卡片带「移除」按钮；`addBot`/`removeBot` 仅房主且仅大厅（`room.game` 为 null）。
 
+### 5.12 局内「退出本局」（`quit`，2026-11-05）
+
+- **语义**：局内顶栏左上角 `‹` 对**任何人**（含房主）都只是「退出这一局」——**只影响自己**，牌局不中止、另外三家体验完全不变。旧的「解散对局」（房主强制结束全场）已从 UI 移除；服务端 `abort` 分支仅为兼容老客户端保留。
+- **服务端**（`case 'quit'`）：置 `away=true` + `auto=true` + `ready=false` → 座位交给 `syncAuto` 代打到本局结束；播报一条 `event`；**只给退出者本人**发 `lobbyState`（此时 `state.playing=true`），同时 `broadcastGame` 让其余三家看到该座位转托管。
+- **三个关键不变量**：
+  1. `broadcastGame` **跳过 `away` 座位**——否则 `game` 消息会让客户端 `navigate('game')`，把人从房间页硬拽回牌桌；
+  2. `startGame` 清 `away`、`attachSeat`（resume/join 回座）也清 `away` —— 新一局 / 重连自动回桌；
+  3. `away` 与 `exited` **是两件事**：`away` = 保座暂离（下一局还能打，人仍在房间）；`exited` = 彻底离场（本局结束后 `removeExitedSeats` 回收座位）。
+- **门口那个坑**：退出后人在房间页，那里有「离开房间」——原先走 `removePlayer` → `forceOver('有玩家离开，本局中止')`，一个人走掉就把另外三家正在打的局废掉。现改为 `leaveRoom` 遇到 `playing` 走 `exitDuringPlay()`（保座托管到本局结束），与 `exit` 同一条收尾路径。
+- **客户端**：`chrome.topbar` 的 `‹` → `game.onQuit()` → 确认框（第一个动作 = 取消，点框外也取消）→ `{t:'quit'}` + `navigate('lobby')`。房间页据 `state.playing` 把准备按钮置灰成「本局进行中」，自己那格显示「已退出本局 · 托管代打」；牌桌铭牌对 `away` 座位显示「已退出」（`GameView.away`），与普通「托管中」区分。
+
 ## 6. ⚠️ 铁律：规则/算分改动流程
 `docs/rules/<玩法>.md` 已声明"**改动规则须先改本文档**"，且未覆盖组合以 `packages/shared/src/` 的实现为准。任何算分/牌型改动**必须**按此顺序，缺一步都会让文档与代码打架：
 
 1. **先改 `docs/rules/<玩法>.md` 的算分/牌型章节**（南昌 §6.2 算子表；赣州 §6 牌型底分与 §7 结算）。
 2. **同步 shared 实现**：南昌 `score.ts`（`classifyPattern`/`computeSettlement`）；赣州 `gzconfig.ts`（数值）+ `gzwin.ts`/`gzscore.ts`（判定与结算）。
-3. **跑 `npm run typecheck`（零报错）+ `npm run build:mp`**，并按文档表格**人工复算典型行**（见 §8 清单）。
+3. **跑 `npm run typecheck`（零报错）+ `npm run build:mg`**，并按文档表格**人工复算典型行**（见 §8 清单）。
 4. **按玩法实测**：改动涉及翻精/胡型/结算的，起两个浏览器标签按 `docs/integration/ganzhou.md` §6 或 `docs/rules/nanchang.md` §10 的清单走一遍。
 
 > 易错点：只改代码忘了文档 → 下次有人以文档为准反向"修"代码，来回拉扯。改一处须两处同改。
 
-## 7. 调试钩子（环境变量）
+## 7. 调试钩子（环境变量 / 配置文件）
 
-服务端读取以下环境变量（默认见 `server/src/index.ts`）：
+服务端读取以下环境变量（默认见 `server/src/index.ts`）。**优先级：环境变量 > 仓库根 `mahjong.config.json`（小驼峰键，见 `server/src/config.ts` 与 `docs/guides/setup-and-run.md` §6.1）> 代码内置默认**；部署时改配置文件即可，环境变量用于临时覆盖。
 
 | 变量 | 默认 | 用途 |
 |---|---|---|
-| `PORT` | 3000 | 监听端口 |
+| `PORT` | 3130 | 监听端口 |
 | `MAHJONG_TURN_MS` | 15000 | 响应窗口（共享 15s 倒计时） |
 | `MAHJONG_AUTO_MS` | 3000 | 掉线 / 手动托管自动出牌等待 |
 | `MAHJONG_BOT_MS` | 1600 | 机器人**出牌**思考时间下限（随机区间起点） |
@@ -249,13 +260,14 @@ npm run typecheck    # tsc --noEmit：改 shared/server 后必须零报错
 | `MAHJONG_ROOM_SWEEP_MS` | 60000 | 房间回收巡检间隔 |
 | `MAHJONG_PING_MS` | 15000 | 心跳 ping 间隔。半开连接（合盖/掉网不发 FIN）只能靠它探活 |
 | `MAHJONG_PONG_TTL_MS` | 45000 | 多久没收到 pong 就掐断连接 → 走「掉线托管 + 重连宽限」 |
+| `WX_MG_APPID` / `WX_MG_SECRET` | 未设 | 小游戏端微信实时语音（wx.joinVoIPChat）凭据；未配 = 客户端隐藏语音入口。Secret 只走环境变量，严禁入库。签名/登录端点见 `server/src/wxvoice.ts`，接入文档 `docs/integration/wechat-voice.md` |
 
 > 断线相关行为一览（2026-10-18 改为**房间级保留制**）：`ws` 正常关闭 → 对局中托管 / 大厅座位**长期保留**（掉线者凭 `token` `resume` 随时续上，离线座位按托管参与、不阻塞开局与定庄——未掷的定庄骰由服务端代掷）；半开连接超时 → 同上；
-> 断线者不再在 30s 宽限后被移出（旧 `MAHJONG_RECON_MS` 已废弃）；人类全断 + 满 ROOM_TTL 后整个房间连同 token 一并回收，此后 resume 会报「房间已失效」，客户端（web / 小程序）见「已失效」类错误一律清会话回首页提示。
+> 断线者不再在 30s 宽限后被移出（旧 `MAHJONG_RECON_MS` 已废弃）；人类全断 + 满 ROOM_TTL 后整个房间连同 token 一并回收，此后 resume 会报「房间已失效」，客户端见「已失效」类错误一律清会话回首页提示。
 
 ## 8. 验证清单（提交前自检）
 
-- [ ] `npm run typecheck` 无错（strict）；改动协议/渲染层另跑 `npm run build:mp`
+- [ ] `npm run typecheck` 无错（strict）；改动协议/渲染层另跑 `npm run build:mg`
 - [ ] 改了算分/牌型 → 对应 `docs/rules/<玩法>.md` **已同步**，且按其表格人工复算过典型行
 - [ ] 结算守恒：四家 `delta` 之和恒为 0（人工抽查结算面板，勿破坏）
 - [ ] 改动流程/交互 → 至少起两个标签实测一遍（见 `docs/integration/ganzhou.md` §6 清单）
@@ -263,16 +275,17 @@ npm run typecheck    # tsc --noEmit：改 shared/server 后必须零报错
 - [ ] 重连：`token` 有效、可 `resume` 回原座位；掉线进入托管不影响对局推进
 - [ ] 换位后 **`binding`/`tokens`/`hostSeat`/`nextDealer` 四者一致**（换位后刷新页面能 resume 回新座位）
 - [ ] 新增玩法：只改 `rules/`（新实现 + 注册一行），**不动 `server/game.ts`**；旧客户端不传 `variant` 仍可正常开局
-- [ ] 改动聊天/互动表情 → 四家视角各看一眼：投掷动画四端都出、气泡挂在正确那家铭牌上、约 4 秒后自动消失、**气泡没有压到手牌/牌墙/牌河**（`scripts/chat_e2e.mjs` 已随 web 客户端删除，改用微信开发者工具真机预览 + `scripts/verify/shots_art.cjs`）
+- [ ] 改动聊天/互动表情 → 四家视角各看一眼：投掷动画四端都出、气泡挂在正确那家铭牌上、约 4 秒后自动消失、**气泡没有压到手牌/牌墙/牌河**（`scripts/chat_e2e.mjs` 已随 web 客户端删除，改用微信开发者工具真机预览 + `scripts/verify/geomcheck.cjs`）
 - [ ] 改了赣州报杠（§5.10）→ 展示后三张亮明且打不出、持有者被强制出牌、第 4 张只可胡且自动杠 +2 分、自摸第 4 张自动杠、**冻结期间仍可胡**；南昌无「展示」按钮
 
 ## 9. 不要做的事（常见坑）
 
-- ❌ 把规则/算分逻辑写进小程序端（`packages/miniapp`）——前端只渲染 `GameView`，所有判定在服务端 + `shared`。
+- ❌ 把规则/算分逻辑写进小游戏端（`packages/minigame`）——前端只渲染 `GameView`，所有判定在服务端 + `shared`。
 - ❌ 改算分倍数/牌型却不改 `docs/rules/<玩法>.md`（见 §6 铁律）。
 - ❌ 把 `Tile` 当字符串或中文处理——全程数字 id 0–33。
 - ❌ "优化"掉掷骰仪式的等待卡点（设计为无点击不自动掷）。
-- ❌ 混淆 `abort`（房主解散**对局**，房间保留）与 `dissolve`（房主解散**牌桌**，全员最终积分弹窗）。
+- ❌ 混淆 `abort`（房主强制结束**本局**，房间保留）与 `dissolve`（房主解散**牌桌**，全员最终积分弹窗），也❌ 把局内 `‹` 做成其中任何一个——它是 `quit`（退出本局，只影响自己，见 §5.12）。
+- ❌ 让「局内退出」或「房间页点离开房间」走到 `removePlayer` → `forceOver`：一个人的动作不能中止另外三家正在打的局。
 - ❌ 用 `ts-node`——本仓库用 `tsx`（`npm run start` / `dev:server`）。
 - ❌ 在 `server/game.ts` 里 `import` 具体玩法（`nanchang.ts`）——引擎只能经 `RuleSet` 契约取能力，否则新增玩法就"必须改核心代码"。
 - ❌ 只改 `room.players[].seat` 而漏改 `binding`/`tokens`（换位、重连会按旧座位找人）。
@@ -286,11 +299,11 @@ npm run typecheck    # tsc --noEmit：改 shared/server 后必须零报错
 - 算分落地：`packages/shared/src/score.ts`（与 `docs/rules/nanchang.md` §6 对齐）
 - 对局引擎：`packages/server/src/game.ts`
 - 房间/协议/定时器/换位：`packages/server/src/index.ts`
-- 入口流程与玩法/大厅 UI：`packages/miniapp/miniprogram/pages/home/`（分步向导）+ `pages/lobby/`（换位）
-- 牌桌渲染：`packages/miniapp/miniprogram/utils/table.js`（web 端 `client/src/table.ts` 的小程序移植版）
+- 入口流程与玩法/大厅 UI：`packages/minigame/game/src/scenes/home.js`（分步向导）+ `scenes/lobby.js`（换位）
+- 牌桌渲染：`packages/minigame/game/utils/table.js`（1280×640 画布）
 - 规则权威文档：`docs/rules/nanchang.md`
 - 赣州规则：`docs/rules/ganzhou.md`；赣州接入说明：`docs/integration/ganzhou.md`
-- 开发辅助脚本：`scripts/`（`mp_build_shared` / `gen_ui_extra` / `variant_settle_server` / `verify/*`）
+- 开发辅助脚本：`scripts/`（`mp_build_shared` / `gen_ui_extra` / `variant_settle_server` / `mg_geomcheck` / `verify/*`）
 - 文档索引：`docs/README.md`
 - 多玩法契约（RuleSet 接口）：`packages/shared/src/rules/types.ts`
 - 多玩法注册表：`packages/shared/src/rules/index.ts`（`VARIANTS` / `getRules` / `VARIANT_LIST`）

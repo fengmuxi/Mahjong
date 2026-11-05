@@ -18,8 +18,10 @@ import {
 import { getRules, VARIANTS } from '../../shared/src/rules/index.ts';
 import { type ClaimRequest } from '../../shared/src/resolver.ts';
 import { computeSettlement } from '../../shared/src/score.ts';
-import { seatWind, tileName, windName } from '../../shared/src/tiles.ts';
+import { seatWind, tileName } from '../../shared/src/tiles.ts';
 import { Game, type GameEvent } from './game.ts';
+import { handleWxApi, WX_API_PATHS, voiceEnabled } from './wxvoice.ts';
+import * as cfg from './config.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(__dirname, '../../client/dist');
@@ -28,7 +30,7 @@ const DIST = path.resolve(__dirname, '../../client/dist');
  * 提交 104bfdc —— 目录里现有的 174 个 webp 是唯一副本，见 `public/README.md`）。
  *
  * 为什么不进代码包：官方代码包体检要求**图片资源合计 ≤ 200KB**、主包 < 1.5MB，
- * 34 张牌面无论怎么压都塞不进（93×135 的 PNG 也有 731KB）。改为服务端托管 + 小程序
+ * 34 张牌面无论怎么压都塞不进（93×135 的 PNG 也有 731KB）。改为服务端托管 + 客户端
  * 联网加载：包体 0 字节，流量走 CDN（34 张 WebP 共约 251KB，带长缓存）。
  */
 const TILES_DIR = path.resolve(__dirname, '../public/tiles');
@@ -53,12 +55,23 @@ const UI_GROUPS = ['hand', 'operate', 'settle', 'hud', 'bg'] as const;
  *（官方体检红线：主包 < 1.5MB、图+音 ≤ 200KB），经 `GET /api/sound` 清单下发。
  */
 const SOUND_DIR = path.resolve(__dirname, '../public/sound');
-/** 音效资源版本号：换了音频就改它，客户端缓存自动失效 */
-const SOUND_VER = process.env.MAHJONG_SOUND_VER || 'v3';
+/**
+ * 头像资源目录（2026-11-04）：玩家可选头像（原神角色），经 `GET /api/avatars` 清单下发，
+ * 命名 `a01.png` … `aNN.png`（与客户端选择器、服务端确定性随机分配同一套稳定 id）。
+ * 不进代码包，与牌面/UI/音效同套路；头像由 `.recover-tmp/avif2png.mjs` 从源 avif 转换。
+ */
+const AVATAR_DIR = path.resolve(__dirname, '../public/avatars');
+/** 音效资源版本号：换了音频就改它，客户端缓存自动失效
+ *  v3 → v4（2026-11-04）：`/api/sound` 增加 `voices` 语音包清单字段。
+ *  虽然键名没变，但老客户端读的是 `sounds`、新客户端才读 `voices` —— 抬版本是为了让
+ *  已缓存旧清单的客户端**必然回源**一次，否则永远看不到新字段（与 UI_VER 同理）。
+ *  v4 → v5（2026-11-04）：新增 `dice` 掷骰音效键。同样必须抬版本，否则缓存里那份
+ *  8 项的旧清单会让客户端一直认为「没有 dice 这个键」，掷骰永远没声。 */
+const SOUND_VER = cfg.str('MAHJONG_SOUND_VER', 'soundVer', 'v5');
 /**
  * 音效键 → 文件名。**白名单**而不是扫目录，防止误放文件混入清单。
  * `bgm` 是唯一的 1MB 长音频（约 65s 循环），按需下载；其余为短音效。
- * 键名与小程序 utils/sound.js 的取用键一一对应。
+ * 键名与客户端 utils/sound.js 的取用键一一对应。
  */
 const SOUND_FILES: Record<string, string> = {
   discard: 'discard.mp3',
@@ -69,11 +82,63 @@ const SOUND_FILES: Record<string, string> = {
   chi: 'chi.mp3',
   click: 'click.mp3',
   bgm: 'bgm.mp3',
+  /**
+   * 掷骰音效（2026-11-04）：骰子翻滚动画的起手声，局内「开局/杠后/翻精」与大厅「定庄」
+   * 共用一条。源素材 43.5KB@1.39s（尾巴 0.5s 全静音），经 scripts/gen_sound_dice.mjs
+   * 裁静音 + 峰值归一 + 96kbps 压到 ~10KB —— 它在「骰子刚开始滚」那一瞬间就要响，
+   * 体积直接等于首播延迟（InnerAudioContext 是整文件下完再播）。
+   */
+  dice: 'dice.mp3',
 };
-/** 对外 base：留空表示「与接口同源」，由小程序自己拼绝对地址 */
-const CDN_BASE = process.env.MAHJONG_CDN || '';
+/**
+ * 语音包（2026-11-04）：五套人声播报。n1 中年男 / n2 青年男（默认） / w1 中年女 / w2 青年女
+ * 为「性别+代际」音色；ht 为「胡桃」角色音色（源文件前缀 `胡桃-`，落盘文件名仍走 ASCII `v_ht_*`）。
+ *
+ * 文件由 `node scripts/gen_sound_voice.mjs` 从 TTS 产物转码而来（WAV→64kbps 单声道 mp3，
+ * 顺带裁首尾静音/峰值归一），命名固定 `v_<pack>_<action>.mp3`：
+ *   · 全 ASCII + 下划线 —— 直接命中 `/sound/` 路由的白名单 `^[a-z0-9_]+\.mp3$`，
+ *     不需要为中文文件名开新路由（源素材是 `n1-吃.wav`，中文和连字符都会被拒）；
+ *   · 扁平目录 —— 该路由只取 `path.basename`，子目录取不到。
+ *
+ * `action` 与对局语义对齐（`GameActionKind` 的超集）：
+ *   chi 吃 · peng 碰 · gang 杠 · angang 暗杠 · gangkai 杠开 · hu 胡(点炮)
+ *   zimo 自摸 · liuju 流局 · guo 过(放弃吃碰杠胡)
+ *
+ * 清单只列**磁盘上真实存在**的文件：换包/删包/只部署了一部分都能被客户端感知，
+ * 客户端据此逐级兜底（当前包 → 默认包 → 原音效），不会因为缺一条就整局哑掉。
+ */
+const VOICE_PACKS = ['n1', 'n2', 'w1', 'w2', 'ht'] as const;
+const VOICE_ACTIONS = ['chi', 'peng', 'gang', 'angang', 'gangkai', 'hu', 'zimo', 'liuju', 'guo'] as const;
+function voiceFile(pack: string, action: string): string {
+  return `v_${pack}_${action}.mp3`;
+}
+/** 语音资源版本号：换了 TTS 批次/重新转码就抬它（与音效版本分开，换语音不必让客户端重下 bgm）。
+ *  v1 → v2（2026-11-04）：新增「胡桃」角色语音包（ht，落盘 v_ht_*.mp3）。 */
+const VOICE_VER = cfg.str('MAHJONG_VOICE_VER', 'voiceVer', 'v2');
+
+/**
+ * 局外背景音乐（2026-11-04）：**整首曲子**，与局内 BGM（bgm.mp3，65s 循环）分开两套。
+ *
+ * 为什么要单独的版本号：局内 BGM 1MB、局外是 2~2.3MB 的整曲。跟着 `SOUND_VER` 走的话，
+ * 换一首曲子会让**所有**客户端的 bgm.mp3 一起缓存失效、重下 1MB —— 白花流量。
+ * `bgmOutVer` 只作用在这三个文件上。
+ *
+ * 文件名同样受 `/sound/` 白名单 `^[a-z0-9_]+\.mp3$` 约束（源文件是中文名+空格+括号，必须改 ASCII）。
+ * 清单只列**磁盘上真实存在**的文件：缺一条就少一条，客户端自动退默认曲目（蒙德的月光），
+ * 不会整局哑掉。
+ */
+const OUT_BGM_FILES: Record<string, string> = {
+  wind: 'bgm_wind.mp3', // 风洗的群山
+  moon: 'bgm_moon.mp3', // 蒙德的月光（默认）
+  reed: 'bgm_reed.mp3', // 钓客漫歌
+};
+/** 局外 BGM 资源版本号：换了曲子/重新压制就抬它（与 SOUND_VER / VOICE_VER 各自独立） */
+const BGM_OUT_VER = cfg.str('MAHJONG_BGM_OUT_VER', 'bgmOutVer', 'v1');
+
+/** 对外 base：留空表示「与接口同源」，由客户端自己拼绝对地址 */
+const CDN_BASE = cfg.str('MAHJONG_CDN', 'cdn', '');
 /** 资源版本号：换了牌面美术就改它，客户端缓存会自动失效 */
-const TILES_VER = process.env.MAHJONG_TILES_VER || 'v4';
+const TILES_VER = cfg.str('MAHJONG_TILES_VER', 'tilesVer', 'v4');
 /**
  * UI 贴图版本号（同上；与牌面分开，UI 换图不必让客户端重下 34 张牌面）。
  * v1 → v2（2026-10-22）：v1 期间清单从 19 项扩到 24 项（加了 table + faceA..D）却**没抬版本号**，
@@ -96,11 +161,19 @@ const TILES_VER = process.env.MAHJONG_TILES_VER || 'v4';
  * v7 → v8（2026-10-23）：inhand_l / inhand_r 重生成 —— alpha 压实（源图边缘半透明在
  * 26×56→17×16 大幅缩小后被滤波平均进牌身，叠绿桌整列发灰），牌身边际一律不透明。
  */
-const UI_VER = process.env.MAHJONG_UI_VER || 'v14';
-const PORT = Number(process.env.PORT ?? 3130);
-const TURN_MS = Number(process.env.MAHJONG_TURN_MS ?? 15000);
+const UI_VER = cfg.str('MAHJONG_UI_VER', 'uiVer', 'v14');
+/**
+ * 头像资源版本号（2026-11-04）：新增 `public/avatars/a01..aNN.png` 玩家可选头像。
+ * 换头像集/新增头像就抬它，客户端清单缓存自动失效。
+ *   v1 → 首批 27 张（a01..a27）
+ *   v2 → 追加 12 张（a28..a39），共 39 张
+ * ⚠ 两处都要抬：这里的默认值 + `mahjong.config.json` 的 `avatarVer`（配置优先级更高）。
+ */
+const AVATAR_VER = cfg.str('MAHJONG_AVATAR_VER', 'avatarVer', 'v3');
+const PORT = cfg.num('PORT', 'port', 3130);
+const TURN_MS = cfg.num('MAHJONG_TURN_MS', 'turnMs', 15000);
 /** 掉线托管：回合者无连接时的自动出牌等待 */
-const AUTO_MS = Number(process.env.MAHJONG_AUTO_MS ?? 3000);
+const AUTO_MS = cfg.num('MAHJONG_AUTO_MS', 'autoMs', 3000);
 /**
  * 机器人代打节奏（ms，2026-10-23 改为**随机思考时间**）。
  * 原来固定 1200ms 出牌、吃碰杠胡**零延迟**，玩家反馈「反应不过来」。
@@ -108,34 +181,161 @@ const AUTO_MS = Number(process.env.MAHJONG_AUTO_MS ?? 3000);
  *   出牌 1.6~3.6s｜吃碰杠胡响应 0.7~1.8s｜掷骰响应沿用响应区间
  * 把 *_MAX 设成与下限相同即退回固定节奏；MAHJONG_BOT_MS=0 可整体关掉思考时间。
  */
-const BOT_MS = Number(process.env.MAHJONG_BOT_MS ?? 1600);
-const BOT_MS_MAX = Number(process.env.MAHJONG_BOT_MS_MAX ?? Math.round(BOT_MS * 2.25));
+const BOT_MS = cfg.num('MAHJONG_BOT_MS', 'botMs', 1600);
+const BOT_MS_MAX = cfg.num('MAHJONG_BOT_MS_MAX', 'botMsMax', Math.round(BOT_MS * 2.25));
 /** 机器人对吃/碰/杠/胡的响应思考时间（原为 0，瞬间跳出很突兀） */
-const BOT_CLAIM_MS = Number(process.env.MAHJONG_BOT_CLAIM_MS ?? 700);
-const BOT_CLAIM_MS_MAX = Number(process.env.MAHJONG_BOT_CLAIM_MS_MAX ?? Math.round(BOT_CLAIM_MS * 2.5));
-const THROW_DICE = process.env.MAHJONG_THROW_DICE !== '0';
+const BOT_CLAIM_MS = cfg.num('MAHJONG_BOT_CLAIM_MS', 'botClaimMs', 700);
+const BOT_CLAIM_MS_MAX = cfg.num('MAHJONG_BOT_CLAIM_MS_MAX', 'botClaimMsMax', Math.round(BOT_CLAIM_MS * 2.5));
+const THROW_DICE = cfg.bool('MAHJONG_THROW_DICE', 'throwDice', true);
 /** 掷骰仪式（开局/杠后点骰子按钮）；MAHJONG_CEREMONY=0 关闭 */
-const CEREMONY = process.env.MAHJONG_CEREMONY !== '0';
+const CEREMONY = cfg.bool('MAHJONG_CEREMONY', 'ceremony', true);
 /** 开局发牌动画窗口（ms） */
-const DEAL_MS = Number(process.env.MAHJONG_DEAL_MS ?? 6500);
+const DEAL_MS = cfg.num('MAHJONG_DEAL_MS', 'dealMs', 6500);
 /** 杠后掷骰动画窗口（ms） */
-const ROLL_MS = Number(process.env.MAHJONG_ROLL_MS ?? 2600);
+const ROLL_MS = cfg.num('MAHJONG_ROLL_MS', 'rollMs', 2600);
 /** 随机风位入座；MAHJONG_FIXED_SEATS=1 时按空位顺序固定入座（本地手动验证用） */
-const RANDOM_SEATS = process.env.MAHJONG_FIXED_SEATS !== '1';
+const RANDOM_SEATS = !cfg.bool('MAHJONG_FIXED_SEATS', 'fixedSeats', false);
 /** 掉线后保留座位的宽限期已被「房间级保留」取代：座位与 token 一直保留到房间被定时回收，
  *  凭 token 随时可 resume 续上（程序退出 / 网络闪断重进都不丢座位）。 */
 /** 房间定时回收：房间内没有任何人类连接持续这么久 → 自动关闭（token 一并作废）。
  *  期间有人 resume / join 就继续存活 —— 退出程序再进来能凭房间码/token 续上，
  *  长期没人回来的无效房间也不会永久占着房间码。 */
-const ROOM_TTL_MS = Number(process.env.MAHJONG_ROOM_TTL_MS ?? 30 * 60_000);
+const ROOM_TTL_MS = cfg.num('MAHJONG_ROOM_TTL_MS', 'roomTtlMs', 30 * 60_000);
 /** 房间回收巡检间隔（ms） */
-const ROOM_SWEEP_MS = Number(process.env.MAHJONG_ROOM_SWEEP_MS ?? 60_000);
+const ROOM_SWEEP_MS = cfg.num('MAHJONG_ROOM_SWEEP_MS', 'roomSweepMs', 60_000);
 /** 心跳间隔 / 存活判定（ms）。笔记本合盖、Wi-Fi 掉线这类「半开连接」不会触发 close，
  *  只能靠 ping/pong 主动探活：超过 PONG_TTL 没有回应就掐断，让人走「掉线托管 + 重连宽限」，
  *  而不是让全桌等一个其实已经不在的人。 */
-const PING_MS = Number(process.env.MAHJONG_PING_MS ?? 15000);
-const PONG_TTL = Number(process.env.MAHJONG_PONG_TTL_MS ?? 45000);
+const PING_MS = cfg.num('MAHJONG_PING_MS', 'pingMs', 15000);
+const PONG_TTL = cfg.num('MAHJONG_PONG_TTL_MS', 'pongTtlMs', 45000);
 const CODE_CHARS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+/**
+ * 头像池（2026-11-04）：部署时由 `public/avatars/a01..aNN.png` 静态决定，模块加载即固化。
+ * 客户端选择器、服务端确定性随机分配、清单下发三处共用同一套稳定 id。
+ *
+ * ⚠ id 是持久协议：玩家本地存了 `mj-avatar=a05`，池里 a05 换图 = 老玩家设置的头像
+ *   静默变成另一个人。新增头像一律**追加**到最大编号之后（`scripts/gen_avatars.mjs`）。
+ *
+ * 正则 `a\d{2,3}`：支持到 a999（两位数上限 99 张，超了要放宽）。
+ * 排序按**数值**而非字符串 —— 否则 `a100` 会排在 `a39` 前面（"1"<"3"）。
+ */
+const AVATARS: string[] = (() => {
+  if (!fs.existsSync(AVATAR_DIR)) return [];
+  return fs
+    .readdirSync(AVATAR_DIR)
+    .filter((f) => /^a\d{2,3}\.png$/.test(f))
+    .map((f) => f.replace(/\.png$/, ''))
+    .sort((x, y) => Number(x.slice(1)) - Number(y.slice(1)));
+})();
+
+/** 校验客户端上报的头像 id：空串 / 非法 = 回退随机（''） */
+function cleanAvatar(raw: unknown): string {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s) return '';
+  return AVATARS.includes(s) ? s : '';
+}
+
+/**
+ * 无头像用户确定性随机：同一 pid 永远分到同一张，避免每次刷新换脸；
+ * 无 pid 或池为空 → 返回空串（客户端回退风位圆）。
+ *
+ * ⚠ 只在**建房时**用（房间还是空的，无同桌可避）。加入房间 / 加机器人走
+ *   `pickFreeAvatar(..., takenAvatars(room))` —— 那里要避开同桌已占用的。
+ */
+function deriveAvatar(pid: string): string {
+  if (!AVATARS.length) return '';
+  if (!pid) return AVATARS[Math.floor(Math.random() * AVATARS.length)];
+  let h = 0;
+  for (let i = 0; i < pid.length; i++) h = (h * 31 + pid.charCodeAt(i)) >>> 0;
+  return AVATARS[h % AVATARS.length];
+}
+
+/**
+ * 同桌不撞的分配（2026-11-04）：在池里从 `startIdx` 起环形找第一个**没被同桌占用**的 id。
+ *
+ * ⚠ 为什么需要：人类按 pid 哈希、机器人按座位号，各自分配的落点都会**均匀铺满整个池**
+ *   （实测每 id ≈ 2.56%），两个独立空间必然重叠 —— 一桌 3 人类 + 1 机器人有约 **21%**
+ *   的概率出现「两个人长得一样」。玩家看到两张一样的脸会以为渲染错了。
+ *
+ * 做法：各自算出**候选下标**（保持自己的确定性锚点：pid 哈希 / 座位号），
+ *   若落点已被同桌占用，就沿池顺延到第一个空闲位 —— 池足够大（39 张）时几乎不会绕回。
+ *
+ * @param startIdx 候选下标（不是 id）
+ * @param taken    同桌已占用的 id 集合
+ */
+function pickFreeAvatar(startIdx: number, taken: Set<string>): string {
+  if (!AVATARS.length) return '';
+  const n = AVATARS.length;
+  const start = ((Math.trunc(startIdx) % n) + n) % n;
+  for (let k = 0; k < n; k++) {
+    const id = AVATARS[(start + k) % n];
+    if (!taken.has(id)) return id;
+  }
+  return AVATARS[start]; // 池被占满（理论上不可能：4 人 vs 39 张）
+}
+
+/** pid → 头像池下标（空 pid → 0；机器人不走这条） */
+function deriveIndex(pid: string): number {
+  if (!AVATARS.length) return 0;
+  if (!pid) return 0;
+  let h = 0;
+  for (let i = 0; i < pid.length; i++) h = (h * 31 + pid.charCodeAt(i)) >>> 0;
+  return h % AVATARS.length;
+}
+
+/**
+ * 同桌已占用的头像 id 集合（用于避让撞脸）。
+ * 只统计**已确定**的头像：玩家自选的（cleanAvatar 有效）+ 机器人已分配的。
+ */
+function takenAvatars(room: Room, exceptSeat?: number): Set<string> {
+  const s = new Set<string>();
+  for (const p of room.players) {
+    if (exceptSeat !== undefined && p.seat === exceptSeat) continue;
+    const a = cleanAvatar(p.avatar);
+    if (a) s.add(a);
+  }
+  return s;
+}
+
+/**
+ * 整房头像表（2026-11-04）：按**座位顺序**一次算完 4 个座位的头像 id。
+ *
+ * ⚠ 必须**整房一次算**（而不是每个座位各自算）：
+ *   若逐个算「避开同桌已占用的」，两个都没确定头像的玩家会**互相避开对方**
+ *   → 各自算出同一张 id，房间内外不一致。整房顺序算则结果唯一且稳定。
+ *
+ * 优先级：玩家自选 > 机器人按座位 > 人类按 pid 哈希；都落空时按座位顺序补空闲位。
+ */
+function roomAvatars(room: Room): string[] {
+  const out: string[] = ['', '', '', ''];
+  const taken = new Set<string>();
+  const seats = [0, 1, 2, 3];
+  // 两轮：先落「已确定」的（自选 + 机器人已分配），再落「待派生」的
+  for (const pass of [0, 1]) {
+    for (const seat of seats) {
+      const p = room.players.find((x) => x.seat === seat);
+      if (!p) continue;
+      const own = cleanAvatar(p.avatar);
+      if (pass === 0) {
+        // 第一轮：已确定的直接占位
+        if (own) {
+          out[seat] = own;
+          taken.add(own);
+        }
+        continue;
+      }
+      // 第二轮：还没定的才派生（避开已占）
+      if (out[seat]) continue;
+      const idx = p.isBot ? seat : deriveIndex(p.pid);
+      const id = pickFreeAvatar(idx, taken);
+      out[seat] = id;
+      if (id) taken.add(id);
+    }
+  }
+  return out;
+}
+
 
 interface Player {
   seat: number;
@@ -160,6 +360,25 @@ interface Player {
    * 期间不可 resume / join 回原座位；仅在 `removeExitedSeats` 回收前为 true。
    */
   exited: boolean;
+  /**
+   * 局内暂离（2026-11-05，`quit`）：本局由托管代打、**座位保留**，人已回到房间页。
+   * 与 `exited` 的区别：`exited` 是本局结束后彻底离场，`away` 是打完这局还能接着打。
+   * · `broadcastGame` 跳过该座位（否则 `game` 消息会把客户端从房间页拽回牌桌）；
+   * · `startGame` / `attachSeat`（重连回桌）会清掉它。
+   */
+  away: boolean;
+  /**
+   * 语音身份（2026-11-03 二期）：客户端 wx.joinVoIPChat 成功后经 `voiceId` 上报。
+   * 挂在 Player 上随座位保留/移除 —— 大厅掉线不清 Player（重连回来映射还在），
+   * leave/kick/removeBot/removeExitedSeats 移除 Player 时映射自然消失，零额外清理。
+   * openid 由客户端自报，仅用于「谁在说话/谁闭麦」的座位级回显，不参与权限判断。
+   */
+  voiceOpenid?: string;
+  voiceMuted?: boolean;
+  /** 扬声器静音（听不听得到别人，2026-11-05 起随 voiceId 的 ear 字段上报；仅供 🔇 角标显示） */
+  voiceEar?: boolean;
+  /** 头像（2026-11-04）：客户端选中的头像 id（如 'a05'）；空串=未选，由服务端按 pid 确定性随机分配 */
+  avatar?: string;
 }
 
 interface Room {
@@ -230,9 +449,15 @@ function genCode(): string {
   }
 }
 
-function cleanName(raw: unknown, fallbackSeat: number): string {
+/**
+ * 玩家昵称清洗（2026-11-02 改版：空名兜底从风位名改为随机名）。
+ * 分享链接直进房是零输入流程 —— 没填过昵称的人会被随机分配「玩家XXXX」，
+ * 保证 join / create 永不因空名卡住；老客户端不发 name 字段同样走这里兜底。
+ * （旧兜底 windName 会显示成「东·东」这种风位叠名，故弃用。）
+ */
+function cleanName(raw: unknown): string {
   const s = typeof raw === 'string' ? raw.trim().slice(0, 8) : '';
-  return s || windName(fallbackSeat);
+  return s || `玩家${1000 + Math.floor(Math.random() * 9000)}`;
 }
 
 /**
@@ -244,6 +469,17 @@ function cleanName(raw: unknown, fallbackSeat: number): string {
 function cleanPid(raw: unknown): string {
   const s = typeof raw === 'string' ? raw.trim() : '';
   return /^[A-Za-z0-9_-]{8,64}$/.test(s) ? s : '';
+}
+
+/**
+ * 语音 openid 清洗（2026-11-03 二期，cleanPid 同款风格）：只接受 `[A-Za-z0-9_-]` 且 1~64 位。
+ * openid 是客户端自报（服务端无法在 WS 侧验证），仅用于「谁在说话/谁闭麦」的座位级回显
+ * ——最坏后果只是说话指示错位（外观问题），不参与任何权限判断。
+ * 空串 = 上报无效 / 未开语音 → 不进映射。
+ */
+function cleanOpenid(raw: unknown): string {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  return /^[A-Za-z0-9_-]{1,64}$/.test(s) ? s : '';
 }
 
 /**
@@ -279,6 +515,8 @@ function broadcastLobby(room: Room): void {
 }
 
 function lobbyState(room: Room, you: number): ServerMsg {
+  // 整房一次算完（按座位顺序、互相避让）—— 见 roomAvatars 注释
+  const avs = roomAvatars(room);
   const players: SeatPlayer[] = room.players.map((p) => ({
     seat: p.seat,
     name: p.name,
@@ -287,6 +525,8 @@ function lobbyState(room: Room, you: number): ServerMsg {
     isHost: p.seat === room.hostSeat,
     isBot: p.isBot,
     auto: p.isBot || p.auto || p.ws === null,
+    away: p.away,
+    avatar: avs[p.seat] || '',
   }));
   // 大厅横幅的语义是「可以开局了」：四人就绪（离线座位按托管算）；
   // **首局定庄只在需要的玩法上才算条件**（南昌默认东起庄 → firstDealerDecided 恒 false，
@@ -308,6 +548,9 @@ function lobbyState(room: Room, you: number): ServerMsg {
     dealer: roomDealer(room),
     dealerRolls: room.dealerRolls.map((r) => ({ ...r, dice: [...r.dice] as [number, number] })),
     dealerDecided: room.firstDealerDecided,
+    // 对局进行中（2026-11-05）：只有「局内退出回房间」的人会收到 true ——
+    // 他本地在房间页，但本局还在别人手里打着，准备/换位都得等本局结束。
+    playing: !!(room.game && room.game.phase === 'playing'),
   };
 }
 
@@ -315,19 +558,57 @@ function broadcastEvent(room: Room, text: string): void {
   for (const p of room.players) send(p.ws, { t: 'event', text });
 }
 
+/**
+ * 当前语音座位映射（2026-11-03 二期）：座位 → (openid, muted) 数组。
+ * 跳过机器人（无 openid）、未上报者与已局内退出者（座位在但人已走）。
+ * 空数组 = 房内暂无人开语音，客户端据此不画任何座位级指示。
+ */
+function voiceMapOf(room: Room): { t: 'voice'; map: { seat: number; openid: string; muted: boolean; ear: boolean }[] } {
+  const map = room.players
+    .filter((p) => !p.isBot && !p.exited && !!p.voiceOpenid)
+    .map((p) => ({ seat: p.seat, openid: p.voiceOpenid as string, muted: p.voiceMuted === true, ear: p.voiceEar === true }));
+  return { t: 'voice', map };
+}
+
+/** 向全房间广播当前语音映射（幂等：客户端拿 map 全量覆盖本地） */
+function broadcastVoice(room: Room): void {
+  const msg = voiceMapOf(room);
+  for (const p of room.players) send(p.ws, msg);
+}
+
 function broadcastGame(room: Room): void {
   if (!room.game) return;
   // 机器人没有连接但恒在座；掉线 / 手动托管 / 机器人一律视为「托管中」
-  const connected = room.players.map((p) => p.isBot || p.ws !== null);
-  const auto = room.players.map((p) => p.isBot || p.auto || p.ws === null);
-  const names = [0, 1, 2, 3].map(
-    (s) => room.players.find((p) => p.seat === s)?.name ?? '',
-  );
+  // ⚠ 2026-11-05：connected/auto/ready/names **必须按 seat 索引**，不能按 players 数组顺序 ——
+  // 玩家离开后新人补位（seat 取空位、数组 push 末尾）或机器人补位，数组顺序会与座位号
+  // 不一致，`view.auto[mySeat]` 就拿到别人的值：客户端以为自己在托管（按钮亮、点手牌走
+  // 取消分支），服务端却不代打、也不允许出牌 → 整局卡死（用户 2026-11-05 报）。
+  const seatPlayer = (s: number) => room.players.find((p) => p.seat === s);
+  const connected = [0, 1, 2, 3].map((s) => {
+    const p = seatPlayer(s);
+    return !!p && (p.isBot || p.ws !== null);
+  });
+  const auto = [0, 1, 2, 3].map((s) => {
+    const p = seatPlayer(s);
+    return !!p && (p.isBot || p.auto || p.ws === null);
+  });
+  // 结算展示期「谁准备了谁没准备」：客户端铭牌据此显示
+  const ready = [0, 1, 2, 3].map((s) => seatPlayer(s)?.ready ?? false);
+  // 局内暂离（quit）：铭牌显示「已退出」而不是笼统的「托管」
+  const away = [0, 1, 2, 3].map((s) => seatPlayer(s)?.away ?? false);
+  const names = [0, 1, 2, 3].map((s) => seatPlayer(s)?.name ?? '');
+  const avatars = roomAvatars(room); // 与大厅同一份算法 → 两处绝不打架
   const totals = [...room.totals];
   const hostSeat = room.hostSeat;
   for (const p of room.players) {
+    // 已退出本局、回房间页的人不再收对局视图（2026-11-05）：`game` 消息会让客户端
+    // 立刻 navigate('game')，把人从房间页硬拽回牌桌。他会在 startGame 时被清 away 回桌。
+    if (p.away) continue;
     const view = room.game.viewFor(p.seat, room.deadlineAt);
-    send(p.ws, { t: 'game', view: { ...view, connected, auto, names, totals, hostSeat, variant: room.variant } });
+    send(p.ws, {
+      t: 'game',
+      view: { ...view, connected, auto, ready, away, names, totals, hostSeat, variant: room.variant, avatars },
+    });
   }
 }
 
@@ -658,7 +939,7 @@ function onGameOver(room: Room): void {
         value: room.totals[s],
       })),
     };
-    for (const p of room.players) send(p.ws, settle);
+    for (const p of room.players) if (!p.away) send(p.ws, settle); // 已退出本局的人不在牌桌，不发结算面板
     broadcastEvent(room, `${playerName(room, winner)} ${result}`);
     if (lock && lock.winner !== null && lock.denied.length > 0) {
       broadcastEvent(
@@ -672,6 +953,9 @@ function onGameOver(room: Room): void {
     // 胡牌 → 摊牌展示：保留牌局、亮出四家手牌，等每人点「下一局」
     for (const p of room.players) p.ready = p.isBot;
     broadcastGame(room);
+    // 已退出本局、人在房间页的（away）：给他一份房间视图（此时 playing=false）——
+    // 否则他那边停在退出那一刻的旧状态，看不到积分更新、也不知道现在可以准备了。
+    for (const p of room.players) if (p.away) send(p.ws, lobbyState(room, p.seat));
     return;
   }
 
@@ -704,6 +988,8 @@ function pruneGonePlayers(room: Room): boolean {
     if (room.autoTimer) clearTimeout(room.autoTimer);
     if (room.dealerStartTimer) clearTimeout(room.dealerStartTimer);
     room.dealerStartTimer = null;
+    if (room.gangRollTimer) clearTimeout(room.gangRollTimer); // 收房清干净（同 dissolve，防幽灵对局）
+    room.gangRollTimer = null;
     clearDiceTimers(room);
     rooms.delete(room.code);
     return false;
@@ -729,6 +1015,9 @@ function removeExitedSeats(room: Room): void {
   }
   room.players = room.players.filter((p) => !p.exited);
   ensureHost(room);
+  // 局内退出者的语音映射随座位回收而失效（voiceMapOf 本就过滤 exited，这里重发一次
+  // 让客户端的座位指示立即摘掉，而不是等下一次映射变化）
+  broadcastVoice(room);
 }
 
 /** 房主必须由人类担任：房主不在场时交给座位最靠前的人类 */
@@ -996,6 +1285,10 @@ function startGame(room: Room): void {
   room.phase = 'game';
   room.pendingSwap = null; // 开局后换位请求作废
   room.botThink = null; // 新一局：作废上一局的思考截止（key 里的 actionSeq 会从 0 重新计数）
+  // 上一局中途「退出本局」的人：新一局一律回桌（2026-11-05）。
+  // 他是在房间页点了「准备」才触发这次开局的，所以醒来即继续参战；
+  // 只有清掉 away，下面的 broadcastGame 才会真的把 game 视图发给他。
+  for (const p of room.players) p.away = false;
   room.game = new Game({
     code: room.code,
     dealer: room.nextDealer,
@@ -1065,6 +1358,9 @@ function applySeatSwap(room: Room, a: number, b: number): void {
     if (r.seat === a) r.seat = b;
     else if (r.seat === b) r.seat = a;
   }
+  // 语音映射按座位键控：换位后两人（及其 openid）对调了座位，必须重发映射，
+  // 否则说话指示会画在错误的人身上（Player 对象没变，只是座位号换了）
+  broadcastVoice(room);
 }
 
 /** 玩家离场后清掉他的定庄掷骰 —— 否则「四人齐」的判定永远不成立、卡在定庄阶段 */
@@ -1177,6 +1473,8 @@ function removePlayer(room: Room, seat: number, reason?: string): void {
   }
   ensureHost(room); // 房主离场 → 交给座位最靠前的人类（绝不让机器人当房主）
   broadcastEvent(room, reason ?? `${windOf(room, removed.seat)}·${removed.name} 离开了房间`);
+  // 语音映射随人移除而失效：全房重发（含 game 相位——对局中被踢/离开同样要摘指示）
+  broadcastVoice(room);
   if (room.game && room.game.phase === 'playing') {
     // 显式离开 → 中止本局（掉线不走这里，见 handleDisconnect）
     applyGameEvents(room, room.game.forceOver('有玩家离开，本局中止'));
@@ -1197,7 +1495,44 @@ function leaveRoom(ws: WebSocket): void {
   binding.delete(ws);
   const room = rooms.get(b.code);
   if (!room) return;
+  const p = room.players.find((x) => x.seat === b.seat);
+  /*
+   * 对局进行中「离开房间」同样**不能中止本局**（2026-11-05）。
+   * 背景：局内顶栏改成「退出本局回房间」后，人会在**本局还在打**的时候站在房间页，
+   * 那里就有「离开房间」按钮 —— 原来走 removePlayer → forceOver，一个人走掉等于把
+   * 另外三家正在打的一局废掉。改为「保座托管到本局结束」，结束后 removeExitedSeats
+   * 统一回收座位（与 `exit` 同一条收尾路径）。
+   */
+  if (p && room.game && room.game.phase === 'playing') {
+    exitDuringPlay(room, p, ws, `${p.name} 离开了房间，本局由托管代打至结束`);
+    return;
+  }
   removePlayer(room, b.seat);
+}
+
+/**
+ * 局内离座（2026-11-05 抽出）：座位留给托管把本局打完，本局结束由 `removeExitedSeats` 回收。
+ *
+ * 调用方：`exit`（彻底离场）、`leaveRoom`（局内退出后又在房间页点「离开房间」）。
+ * 标记 `exited` → resume / join 凭 token / pid 都回不来；清掉本连接的绑定与座位指针，
+ * 但**保留令牌**到回收时再删（让拒连文案更明确，而非笼统的「房间已失效」）。
+ * ⚠ 与 `quit` 的区别：`quit` 是保座暂离（`away`），这个是**放弃座位**。
+ */
+function exitDuringPlay(room: Room, me: Player, ws: WebSocket | null, reason: string): void {
+  if (ws) binding.delete(ws);
+  me.ws = null;
+  me.auto = true;
+  me.away = false; // 彻底离场优先于暂离：不再需要房间视图
+  me.exited = true;
+  if (me.reconTimer) {
+    clearTimeout(me.reconTimer);
+    me.reconTimer = null;
+  }
+  ensureHost(room); // 走的是房主 → 立即改选新房主（绝不让机器人当房主）
+  broadcastEvent(room, reason);
+  broadcastVoice(room); // voiceMapOf 过滤 exited：该座位的说话指示要摘掉
+  broadcastGame(room);
+  syncAuto(room);
 }
 
 /**
@@ -1221,6 +1556,9 @@ function attachSeat(room: Room, player: Player, ws: WebSocket, sameWs: boolean):
     player.reconTimer = null;
   }
   if (!sameWs) broadcastEvent(room, `${playerName(room, player.seat)} 重新连接`);
+  // 重连即回桌（2026-11-05）：上局中途退出过本局的人又回来了，清掉暂离标记，
+  // 否则下面的 broadcastGame 会按 away 跳过他，客户端永远收不到对局视图。
+  player.away = false;
   if (room.game && room.game.phase === 'playing') {
     broadcastGame(room);
     syncAuto(room);
@@ -1230,13 +1568,16 @@ function attachSeat(room: Room, player: Player, ws: WebSocket, sameWs: boolean):
   } else {
     broadcastLobby(room);
   }
+  // 视图重发后补发当前语音座位映射（resume / pid 回桌 / 换设备顶号都要拿到——
+  // 否则重连者的座位级说话指示会空到下一次映射变化）
+  send(ws, voiceMapOf(room));
 }
 
 /**
  * 非对局进行中的掉线：**长期保留座位 + 令牌**（房间级保留制）。
  *
  * 背景：ws close 是「连接断开」而不是「用户想走」。刷新页面、切后台、网络闪断、
- * 直接杀掉小程序再重开，都会触发它 —— 凭 token `resume` 随时回原座位续上；
+ * 直接杀掉客户端再重开，都会触发它 —— 凭 token `resume` 随时回原座位续上；
  * 房间里没有任何人类连接持续 ROOM_TTL_MS 后才由巡检自动关房（无效房间定时关闭）。
  * 对局进行中仍走原有托管逻辑（不阻塞牌局推进）。
  */
@@ -1250,8 +1591,12 @@ function beginReconnectGrace(room: Room, p: Player, ws: WebSocket): void {
   }
   const mins = Math.max(1, Math.round(ROOM_TTL_MS / 60000));
   broadcastEvent(room, `${playerName(room, p.seat)} 掉线，座位将保留 ${mins} 分钟，期间重进即可续局`);
-  if (room.game) broadcastGame(room);
-  else {
+  if (room.game) {
+    // 摊牌展示中掉线：同 removePlayer 的口径补一次收桌判定（2026-11-04 审计 S5）——
+    // 其余已点「下一局」的人不该悬在结算面板等这个离线者；没凑齐则继续展示（无副作用）。
+    if (displaying(room)) finalizeIfReady(room);
+    if (room.game) broadcastGame(room); // 已收桌/开下一局时 game 为 null，finalizeIfReady 内部已广播
+  } else {
     // 掉线者错过定庄掷骰会卡死 others（要满 4 人全掷才定庄）→ 托管补掷
     syncBotDealerRolls(room);
     broadcastLobby(room);
@@ -1279,6 +1624,12 @@ function handleDisconnect(ws: WebSocket): void {
 }
 
 function handle(ws: WebSocket, msg: ClientMsg): void {
+  // 垃圾输入守卫（2026-11-04 审计 S1）：JSON 文本 "null"/"5"/"[" 解析成功但不是消息
+  // 对象，直接取 msg.t 会抛 TypeError（外层兜底虽能接住，这里给出更明确的错误提示）。
+  if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string') {
+    send(ws, { t: 'error', reason: '消息格式错误' });
+    return;
+  }
   switch (msg.t) {
     case 'create': {
       if (binding.has(ws)) {
@@ -1296,15 +1647,17 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         hostSeat: seat,
         players: [{
           seat,
-          name: cleanName(msg.name, seat),
+          name: cleanName(msg.name),
         token,
         pid: cleanPid(msg.pid),
+        avatar: cleanAvatar(msg.avatar) || deriveAvatar(cleanPid(msg.pid)),
         ready: false,
         ws,
         reconTimer: null,
         isBot: false,
         auto: false,
         exited: false,
+        away: false,
       }],
         phase: 'lobby',
         game: null,
@@ -1328,6 +1681,7 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       binding.set(ws, { code, seat });
       tokens.set(token, { code, seat });
       send(ws, lobbyState(room, seat));
+      send(ws, voiceMapOf(room)); // 语音映射：房主自己是首个连接，正常是空表（统一走同一出口）
       return;
     }
     case 'resume': {
@@ -1406,13 +1760,19 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       const taken = new Set(room.players.map((p) => p.seat));
       const free = [0, 1, 2, 3].filter((s) => !taken.has(s));
       const seat = RANDOM_SEATS ? free[Math.floor(Math.random() * free.length)] : free[0];
-      const name = cleanName(msg.name, seat);
+      const name = cleanName(msg.name);
       const token = randomUUID();
-      room.players.push({ seat, name, token, pid, ready: false, ws, reconTimer: null, isBot: false, auto: false, exited: false });
+      // 自选头像优先；未选则按 pid 哈希派生，并**避开同桌已占用的**（防撞脸）
+      const picked = cleanAvatar(msg.avatar);
+      const avatar = picked || pickFreeAvatar(deriveIndex(pid), takenAvatars(room));
+      room.players.push({ seat, name, token, pid, avatar, ready: false, ws, reconTimer: null, isBot: false, auto: false, exited: false, away: false });
       binding.set(ws, { code, seat });
       tokens.set(token, { code, seat });
       broadcastEvent(room, `${windOf(room, seat)}·${name} 加入了房间`);
       broadcastLobby(room);
+      // 新加入者拿不到之前的 voice 广播（map 只发一次）：定向补发当前映射。
+      // 其他人也没丢东西——他们已经在 attachSeat/create 时拿过，映射没变。
+      send(ws, voiceMapOf(room));
       syncBotDealerRolls(room); // 满员后机器人自动掷骰定庄
       return;
     }
@@ -1447,6 +1807,9 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
           send(p.ws, { t: 'variant', variant: v, totals: [...room.totals], cleared: clearScores });
         }
       } else {
+        // 切到需要定庄的玩法（如南昌→赣州）后补一次托管补掷（2026-11-04 审计 S8）：
+        // 与 join/addBot/掉线同一不变式 —— 掉线座位的定庄骰不能没人代掷卡住整桌。
+        syncBotDealerRolls(room);
         broadcastLobby(room);
       }
       return;
@@ -1512,12 +1875,16 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
         name,
         token: randomUUID(), // 不注册进 tokens：机器人座位不可被 resume
         pid: '', // 机器人没有玩家 id → 永远不会被「按 pid 重进」顶替
+        // 机器人也有头像：按**座位号**派生（跨房间稳定、刷新不换脸），
+        // 并避开同桌已占用的（防与人类撞脸）。见 roomAvatars / pickFreeAvatar。
+        avatar: pickFreeAvatar(seat, takenAvatars(room)),
         ready: true, // 机器人恒就绪，人类准备完即可开局
         ws: null,
         reconTimer: null,
         isBot: true,
         auto: true,
         exited: false,
+        away: false,
       });
       broadcastEvent(room, `${windOf(room, seat)}·${name} 加入了房间`);
       broadcastLobby(room);
@@ -1614,12 +1981,16 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       const me = room.players.find((p) => p.seat === b.seat);
       if (!me) return;
       const next = Boolean(msg.auto);
-      if (me.auto === next) return;
+      const changed = me.auto !== next;
       me.auto = next;
-      broadcastEvent(room, `${me.name} ${next ? '开启托管' : '取消托管'}`);
+      if (changed) broadcastEvent(room, `${me.name} ${next ? '开启托管' : '取消托管'}`);
+      // 2026-11-05（用户报「取消托管后按钮还亮、不代打也不出牌」）：**不再因状态没变而静默
+      // return** —— 客户端 autoOn 只要有一次没跟上（断线重连 / 旧视图 / 座位数组错位），
+      // 取消请求就会被吞掉，永远收不到 auto=false。这里总是广播一次（幂等）让客户端以服务端
+      // 为准校准；syncAuto 只在真变化时重置定时器，避免无端延长已排好的代打延迟。
       if (room.game) {
         broadcastGame(room);
-        syncAuto(room);
+        if (changed) syncAuto(room);
       } else {
         broadcastLobby(room);
       }
@@ -1633,20 +2004,17 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       const p = room.players.find((x) => x.seat === b.seat);
       if (!p) return;
       if (room.game && room.game.phase === 'playing') {
-        send(ws, { t: 'error', reason: '对局进行中，无法准备' });
+        // 局内退出（away）的人在房间页点准备：不是错误操作，只是时机没到
+        send(ws, { t: 'error', reason: p.away ? '本局还在进行，结束后就能准备下一局' : '对局进行中，无法准备' });
         return;
       }
       p.ready = Boolean(msg.ready);
       if (displaying(room)) {
-        // 摊牌展示中：只回自己的大厅状态（不打断他人看牌）。
-        // 若这一下正好凑齐所有人 → finalizeIfReady 直接开下一局，那条 game 才是客户端
-        // 该走的路；此时再补一条 state 会把它踹回大厅（同 finalizeIfReady 的说明）。
-        if (p.ready) {
-          finalizeIfReady(room);
-          if (displaying(room)) send(ws, lobbyState(room, b.seat));
-        } else {
-          send(ws, lobbyState(room, b.seat));
-        }
+        // 摊牌展示中：准备/取消准备都**广播整桌**（game 视图带 ready[]），
+        // 让所有人看到「谁准备了谁没准备」。凑齐时 finalizeIfReady 会开下一局
+        // （startGame → broadcastGame(playing)）或内部 broadcastLobby，二者都不该再发 over。
+        if (p.ready) finalizeIfReady(room);
+        if (displaying(room)) broadcastGame(room);
         return;
       }
       broadcastEvent(room, `${p.name}${p.ready ? ' 已准备' : ' 取消准备'}`);
@@ -1664,11 +2032,11 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       }
       const p = room.players.find((x) => x.seat === b.seat);
       if (!p) return;
-      p.ready = true; // 点「下一局」= 默认就绪
+      p.ready = true; // 点「准备/下一局」= 默认就绪
       finalizeIfReady(room);
-      // 没开成（还有别人没点）才回大厅态；开成了会收到 game，此时再甩一条 state
-      // 就会把客户端往大厅踹（用户报「已经开始下一局却卡在准备界面」）。
-      if (displaying(room)) send(ws, lobbyState(room, b.seat));
+      // 没开成（还有别人没点）→ 广播整桌（game 视图带 ready[]），所有人看到谁准备了；
+      // 开成了 finalizeIfReady 内部已广播 playing 视图，不能再发 over（否则把客户端踹回结算）。
+      if (displaying(room)) broadcastGame(room);
       return;
     }
     case 'abort': {
@@ -1728,6 +2096,11 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       if (room.autoTimer) clearTimeout(room.autoTimer);
       if (room.dealerStartTimer) clearTimeout(room.dealerStartTimer);
       room.dealerStartTimer = null;
+      // 杠后掷骰兜底定时器必须一并清（2026-11-04 审计 S3）：dissolve 不改 room.game/phase，
+      // 残留的定时器到点后守卫全数通过 → rollDice → 幽灵对局复活，向已解散的四端继续
+      // 广播甚至自动打完结算（房间对象已被 rooms.delete，改动只残留在悬空对象上）。
+      if (room.gangRollTimer) clearTimeout(room.gangRollTimer);
+      room.gangRollTimer = null;
       clearDiceTimers(room);
       rooms.delete(room.code);
       return;
@@ -1747,24 +2120,45 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       if (!me) return;
       if (room.game && room.game.phase === 'playing') {
         // 局内退出：保留座位、交给托管把本局打完，本局结束后由 removeExitedSeats 回收。
-        // 标记 exited → resume / join 凭 token / pid 都回不来；清掉本连接的绑定与座位指针，
-        // 但**保留令牌**到回收时再删（让拒连文案更明确，而非笼统的「房间已失效」）。
-        binding.delete(ws);
-        me.ws = null;
-        me.auto = true;
-        me.exited = true;
-        if (me.reconTimer) {
-          clearTimeout(me.reconTimer);
-          me.reconTimer = null;
-        }
-        ensureHost(room); // 退出的若是房主，立即改选新房主
-        broadcastEvent(room, `${me.name} 已退出本局，由托管代打至本局结束`);
-        broadcastGame(room);
-        syncAuto(room);
+        exitDuringPlay(room, me, ws, `${me.name} 已退出本局，由托管代打至本局结束`);
         return;
       }
       // 大厅 / 摊牌展示：等同主动离开（立即移除座位、回房间）
       removePlayer(room, b.seat, `${me.name} 离开了房间`);
+      return;
+    }
+    case 'quit': {
+      // 退出本局（2026-11-05，局内顶栏 ‹）：**任何人**都能点，只影响自己。
+      // 座位保留 + 托管代打，人回房间页等本局结束；下一局开局（startGame）自动回桌。
+      // 与 `exit`（彻底离场、本局结束回收座位）不同 —— 局内 UI 只发这个。
+      const b = binding.get(ws);
+      const room = b ? rooms.get(b.code) : null;
+      if (!b || !room) {
+        send(ws, { t: 'error', reason: '当前不在房间中' });
+        return;
+      }
+      const me = room.players.find((p) => p.seat === b.seat);
+      if (!me) return;
+      if (me.exited) {
+        send(ws, { t: 'error', reason: '你已退出本局' });
+        return;
+      }
+      if (!room.game || room.game.phase !== 'playing') {
+        send(ws, { t: 'error', reason: '当前没有进行中的对局' });
+        return;
+      }
+      if (!me.away) {
+        me.away = true;
+        me.auto = true; // 座位立刻转托管，syncAuto 会安排代打
+        me.ready = false;
+        broadcastEvent(room, `${me.name} 退出了本局，座位由托管代打至本局结束`);
+        // 其余三家看到该座位转托管（away 座位在 broadcastGame 里被跳过，不会回灌给他自己）
+        broadcastGame(room);
+        syncAuto(room);
+      }
+      // 幂等：无论刚退出还是早已退出，都把「房间视图（playing=true）」补给他，
+      // 客户端据此停在房间页。重复点只是重发这一条，不会重复播报。
+      send(ws, lobbyState(room, me.seat));
       return;
     }
     case 'swap': {
@@ -1859,6 +2253,34 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       }
       return;
     }
+    case 'voiceId': {
+      // 语音身份上报（2026-11-03 二期）：加入语音成功 / 开关麦后客户端发来 openid+muted，
+      // 服务端挂到座位的 Player 上并向全房间广播最新映射。校验风格同 cleanPid：
+      // 白名单清洗，无效上报静默忽略（不回 error——语音指示是增强功能，别为它打断对局）。
+      const b = binding.get(ws);
+      const room = b ? rooms.get(b.code) : null;
+      if (!b || !room) return;
+      const me = room.players.find((p) => p.seat === b.seat);
+      if (!me || me.isBot) return;
+      const openid = cleanOpenid(msg.openid);
+      const muted = msg.muted === true;
+      const ear = msg.ear === true;
+      // 与现值比较：state 消息驱动的 announce 重发很频繁，无变化就不重广播
+      if (me.voiceOpenid === openid && (me.voiceMuted ?? false) === muted && (me.voiceEar ?? false) === ear) return;
+      if (!openid) {
+        // 空 openid = 明确退出语音 / 上报无效：清掉映射条目
+        if (me.voiceOpenid === undefined) return;
+        delete me.voiceOpenid;
+        delete me.voiceMuted;
+        delete me.voiceEar;
+      } else {
+        me.voiceOpenid = openid;
+        me.voiceMuted = muted;
+        me.voiceEar = ear;
+      }
+      broadcastVoice(room);
+      return;
+    }
     case 'emote': {
       // 定向互动表情：校验目标座位有人且不是自己、id 合法，然后**广播给全员**
       // （各端在 target 的位置播同一段动画，所有玩家可见）
@@ -1934,14 +2356,14 @@ function handle(ws: WebSocket, msg: ClientMsg): void {
       return;
     }
     case 'ping':
-      // 应用级心跳（微信小程序：wx.connectSocket 发不出 ws 级 ping 帧）——
-      // 收到即视为存活，并回一个 pong 供客户端确认链路。见 docs/integration/wechat-miniprogram.md P0
+      // 应用级心跳（微信客户端：wx.connectSocket 发不出 ws 级 ping 帧）——
+      // 收到即视为存活，并回一个 pong 供客户端确认链路。见 packages/minigame/game/utils/net.js
       lastAlive.set(ws, Date.now());
       send(ws, { t: 'pong' });
       return;
     default: {
       // 带上消息类型：以前只回「未知消息」，客户端事件流里根本看不出是哪条包。
-      // 每条连接只回一次：新旧版本错配时（例如旧服务端不认识小程序的 10s 应用级心跳
+      // 每条连接只回一次：新旧版本错配时（例如旧服务端不认识客户端的 10s 应用级心跳
       // `{t:'ping'}`）会每 10 秒触发一次，既刷屏又把客户端操作区顶得一跳一跳。
       const raw = msg as unknown as { t?: unknown };
       if (!unknownMsgWarned.has(ws)) {
@@ -1957,8 +2379,22 @@ const server = http.createServer((req, res) => {
   try {
     const url = new URL(req.url ?? '/', 'http://localhost');
 
+    // 微信实时语音支撑（2026-11-03，详见 wxvoice.ts 头注释）：
+    // GET /api/wx/voice 开关状态 · POST /api/wx/session 登录 · POST /api/wx/voipsig VoIP 签名。
+    // 与下方 GET 清单路由互不重叠；异常在 handleWxApi 内部兜底，这里只防未捕获 reject。
+    if (WX_API_PATHS.has(url.pathname)) {
+      handleWxApi(req, res, url.pathname).catch(() => {
+        try {
+          res.writeHead(500).end();
+        } catch {
+          /* 已应答 */
+        }
+      });
+      return;
+    }
+
     // 牌面资源清单：`GET /api/tiles` → { version, base, tiles: ['t00.webp', …], faces: { faceA:'face/faceA.webp', … } }
-    // base 为空时，小程序用接口自身的 origin 拼出绝对地址。
+    // base 为空时，客户端用接口自身的 origin 拼出绝对地址。
     if (url.pathname === '/api/tiles') {
       const tiles = fs.existsSync(TILES_DIR)
         ? fs.readdirSync(TILES_DIR).filter((f) => /^t\d{2}\.webp$/.test(f)).sort()
@@ -1973,8 +2409,10 @@ const server = http.createServer((req, res) => {
       }
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
-        // 清单本身要能被刷新（换版本时立刻生效），但缓存一下能省掉每次进房的往返
-        'cache-control': 'public, max-age=300',
+        // no-cache = 可存但每次必须回源校验（2026-11-03）：清单只有几百字节，
+        // 而 max-age=300 会让「抬版本号」最长 5 分钟才生效 —— 用户抬了版本、
+        // 真机还在拿旧清单旧图，正是这个缓存头在拖后腿。
+        'cache-control': 'no-cache',
       });
       res.end(JSON.stringify({ version: TILES_VER, base: CDN_BASE, tiles, faces }));
       return;
@@ -2001,8 +2439,9 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // 局内音效清单：`GET /api/sound` → { version, base, sounds: { discard:'discard.mp3', … } }
-    // 音频同样不进代码包；键名与小程序 utils/sound.js 一一对应。
+    // 局内音效清单：`GET /api/sound` → { version, base, sounds: { discard:'discard.mp3', … },
+    //   voiceVer, voices: { n1: { chi:'v_n1_chi.mp3', … }, … } }
+    // 音频同样不进代码包；键名与客户端 utils/sound.js 一一对应。
     if (url.pathname === '/api/sound') {
       const sounds: Record<string, string> = {};
       if (fs.existsSync(SOUND_DIR)) {
@@ -2010,11 +2449,42 @@ const server = http.createServer((req, res) => {
           if (fs.existsSync(path.join(SOUND_DIR, f))) sounds[k] = f;
         }
       }
+      // 语音包：逐包逐动作探存在性。缺文件 = 该条不下发，客户端自动退默认包/原音效。
+      const voices: Record<string, Record<string, string>> = {};
+      if (fs.existsSync(SOUND_DIR)) {
+        for (const pack of VOICE_PACKS) {
+          const row: Record<string, string> = {};
+          for (const act of VOICE_ACTIONS) {
+            const f = voiceFile(pack, act);
+            if (fs.existsSync(path.join(SOUND_DIR, f))) row[act] = f;
+          }
+          // 整套都没有就不占位（客户端见到 pack 缺失即视为不可选）
+          if (Object.keys(row).length > 0) voices[pack] = row;
+        }
+      }
+      // 局外背景音乐：逐曲探存在性。缺曲 = 不下发，客户端退默认曲目。
+      const bgmOut: Record<string, string> = {};
+      if (fs.existsSync(SOUND_DIR)) {
+        for (const [id, f] of Object.entries(OUT_BGM_FILES)) {
+          if (fs.existsSync(path.join(SOUND_DIR, f))) bgmOut[id] = f;
+        }
+      }
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
-        'cache-control': 'public, max-age=300',
+        // 同 /api/tiles：no-cache 让抬版本号立刻生效（清单很小，回源代价可忽略）
+        'cache-control': 'no-cache',
       });
-      res.end(JSON.stringify({ version: SOUND_VER, base: CDN_BASE, sounds }));
+      res.end(
+        JSON.stringify({
+          version: SOUND_VER,
+          base: CDN_BASE,
+          sounds,
+          voiceVer: VOICE_VER,
+          voices,
+          bgmOut,
+          bgmOutVer: BGM_OUT_VER,
+        }),
+      );
       return;
     }
 
@@ -2073,7 +2543,7 @@ const server = http.createServer((req, res) => {
     }
 
     // UI 贴图清单：`GET /api/ui` → { version, base, images: { back:'hand/back.webp', … } }（分组相对路径）
-    // 键名与小程序 utils/uiart.js 的取用键一一对应（back/peng/gang/hu/guo/win/lost/draw/banker/d0..d9）。
+    // 键名与客户端 utils/uiart.js 的取用键一一对应（back/peng/gang/hu/guo/win/lost/draw/banker/d0..d9）。
     if (url.pathname === '/api/ui') {
       // 分组清单：images[key] = `<group>/<key>.webp`（递归子目录，平铺残留自动忽略）
       const images: Record<string, string> = {};
@@ -2087,7 +2557,8 @@ const server = http.createServer((req, res) => {
       }
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
-        'cache-control': 'public, max-age=300',
+        // 同 /api/tiles：no-cache 让抬版本号立刻生效（清单很小，回源代价可忽略）
+        'cache-control': 'no-cache',
       });
       res.end(JSON.stringify({ version: UI_VER, base: CDN_BASE, images }));
       return;
@@ -2121,11 +2592,39 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // 头像清单：`GET /api/avatars` → { version, base, avatars: ['a01', …] }（稳定 id，无扩展名）
+    // 客户端选择器据此渲染网格；与 /api/tiles 同思路（no-cache 让抬版本号立刻生效）。
+    if (url.pathname === '/api/avatars') {
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-cache',
+      });
+      res.end(JSON.stringify({ version: AVATAR_VER, base: CDN_BASE, avatars: AVATARS }));
+      return;
+    }
+
+    // 头像静态资源 `/avatars/aNN.png`：内容不变，长缓存（换版本走清单里的 version）
+    if (url.pathname.startsWith('/avatars/')) {
+      const name = path.basename(decodeURIComponent(url.pathname));
+      // 只认 `aNN.png`（两位或三位）：挡目录穿越 / 任意后缀（头像池由部署固定，不接受其它名）
+      const file = path.join(AVATAR_DIR, name);
+      if (!/^a\d{2,3}\.png$/.test(name) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': 'image/png',
+        'cache-control': 'public, max-age=31536000, immutable',
+      });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+
     if (!fs.existsSync(DIST)) {
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
       // web 客户端（packages/client）已在提交 104bfdc 移除，npm run build 随之删除；
-      // 对局入口改为微信小程序（packages/miniapp），服务端只保留 /ws 与 /api 资源。
-      res.end('web 客户端已移除，请使用微信小程序端加入对局');
+      // 对局入口为微信小游戏（packages/minigame），服务端只保留 /ws 与 /api 资源。
+      res.end('请使用微信小游戏端加入对局');
       return;
     }
     let file = path.normalize(path.join(DIST, decodeURIComponent(url.pathname)));
@@ -2143,7 +2642,9 @@ const server = http.createServer((req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ server, path: '/ws' });
+// maxPayload（2026-11-04 审计 S6）：协议里最长的消息远小于 64KB，显式收紧默认值
+// （100MiB）—— 超限帧被 ws 直接以 1009 关闭，避免超大消息解析期间阻塞整个事件循环。
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
 /**
  * 端口占用要说人话（2026-10-22）。
  *
@@ -2188,9 +2689,33 @@ wss.on('connection', (ws) => {
       send(ws, { t: 'error', reason: '消息格式错误' });
       return;
     }
-    handle(ws, msg);
+    // 兜底（2026-11-04 审计 S1）：分支内任何未预料的异常都收敛成一条 error 消息。
+    // ws 库不吞监听器异常 —— 一旦逃逸就是 uncaughtException 直接打崩进程（JSON 文本
+    // "null" 曾让 switch (msg.t) 抛 TypeError，全服掉线）。
+    try {
+      handle(ws, msg);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : '服务器处理失败';
+      try {
+        send(ws, { t: 'error', reason });
+      } catch {
+        /* 连接可能正在关闭 */
+      }
+    }
   });
   ws.on('pong', () => lastAlive.set(ws, Date.now()));
+  // 连接级 error 监听（2026-11-04 审计 S6 配套）：ws 库在接收出错（最典型是超过
+  // maxPayload 的 WS_ERR_UNSUPPORTED_MESSAGE_LENGTH）时对连接 emit 'error'，
+  // 不挂监听就逃逸成 uncaughtException 打崩进程 —— 实测 80KB 消息即可复现。
+  // terminate 触发 close → 走正常的掉线托管/保留流程。
+  ws.on('error', (err) => {
+    console.log(`[ws] 连接错误（已断开）：${err.message}`);
+    try {
+      ws.terminate();
+    } catch {
+      /* 连接可能已关闭 */
+    }
+  });
   ws.on('close', () => {
     lastAlive.delete(ws);
     handleDisconnect(ws);
@@ -2222,6 +2747,8 @@ function closeRoom(room: Room): void {
   if (room.autoTimer) clearTimeout(room.autoTimer);
   if (room.dealerStartTimer) clearTimeout(room.dealerStartTimer);
   room.dealerStartTimer = null;
+  if (room.gangRollTimer) clearTimeout(room.gangRollTimer); // 收房清干净（同 dissolve，防幽灵对局）
+  room.gangRollTimer = null;
   clearDiceTimers(room);
   for (const p of room.players) {
     if (p.reconTimer) clearTimeout(p.reconTimer);
@@ -2257,6 +2784,13 @@ server.listen(PORT, () => {
     }
   }
   console.log(`响应窗口 ${TURN_MS}ms，掷骰补杠：${THROW_DICE ? '开' : '关'}`);
+  // 语音功能自检：appid/secret 齐备才算开通；未配置 = 客户端隐藏语音入口
+  const voiceOn = voiceEnabled('mg');
+  console.log(
+    voiceOn
+      ? `实时语音签名服务 mg:开`
+      : '实时语音未启用（配 WX_MG_APPID/SECRET 后重启即开）',
+  );
   // 牌面素材自检（2026-10-20）：清单为空 = 客户端会**静默退回矢量牌面**，
   // 表现成「牌面变成大字」。启动时把目录/张数打出来，部署漏带 public/tiles 一眼可见。
   const tileCount = fs.existsSync(TILES_DIR)
@@ -2280,6 +2814,12 @@ server.listen(PORT, () => {
       ? `UI 贴图 ${UI_DIR} · ${uiCount} 张 · 版本 ${UI_VER}`
       : `⚠ UI 贴图缺失（${UI_DIR} 里只有 ${uiCount}/24 张）→ 牌背/操作钮/结算艺术字/桌面/座位平放牌会回退矢量；跑 node scripts/gen_ui_extra.mjs 重新生成，或检查部署是否漏带 public/ui`,
   );
+  // 头像自检（2026-11-04）：头像同样走 CDN 清单。缺文件 = 客户端回退风位圆（不影响对局）
+  console.log(
+    AVATARS.length
+      ? `头像 ${AVATAR_DIR} · ${AVATARS.length} 张 · 版本 ${AVATAR_VER}`
+      : `⚠ 头像缺失（${AVATAR_DIR} 为空）→ 铭牌回退风位圆；确认 public/avatars 随版本一起发布`,
+  );
   // 局内音效自检（2026-10-23）：音效同样走 CDN 清单，缺文件 = 客户端静音回退（不影响对局）
   const soundTotal = Object.keys(SOUND_FILES).length;
   const soundCount = fs.existsSync(SOUND_DIR)
@@ -2289,6 +2829,32 @@ server.listen(PORT, () => {
     soundCount === soundTotal
       ? `局内音效 ${SOUND_DIR} · ${soundCount} 个 · 版本 ${SOUND_VER}`
       : `⚠ 局内音效缺失（${SOUND_DIR} 里 ${soundCount}/${soundTotal} 个）→ 客户端静音回退；确认 public/sound 随版本一起发布`,
+  );
+  // 局外 BGM 自检（2026-11-04）：三首整曲。缺曲 = 客户端退默认曲目（蒙德的月光），不影响对局。
+  const outBgmTotal = Object.keys(OUT_BGM_FILES).length;
+  const outBgmGot = fs.existsSync(SOUND_DIR)
+    ? Object.keys(OUT_BGM_FILES).filter((k) => fs.existsSync(path.join(SOUND_DIR, OUT_BGM_FILES[k]))).length
+    : 0;
+  console.log(
+    outBgmGot === outBgmTotal
+      ? `局外 BGM ${outBgmGot} 首（${Object.keys(OUT_BGM_FILES).join('/')}）· 版本 ${BGM_OUT_VER}`
+      : `⚠ 局外 BGM 缺失（${SOUND_DIR} 里 ${outBgmGot}/${outBgmTotal} 首）→ 客户端退默认曲目；确认 public/sound 随版本一起发布`,
+  );
+  // 语音包自检（2026-11-04）：四套 × 9 条。缺包不缺局 —— 客户端退默认包/原音效，
+  // 但「一条都没有」说明转码步骤漏了（没跑 scripts/gen_sound_voice.mjs 或部署没带）。
+  let voiceGot = 0;
+  const voiceMissing: string[] = [];
+  for (const pack of VOICE_PACKS) {
+    for (const act of VOICE_ACTIONS) {
+      if (fs.existsSync(path.join(SOUND_DIR, voiceFile(pack, act)))) voiceGot += 1;
+      else if (voiceMissing.length < 6) voiceMissing.push(`${pack}/${act}`);
+    }
+  }
+  const voiceTotal = VOICE_PACKS.length * VOICE_ACTIONS.length;
+  console.log(
+    voiceGot === voiceTotal
+      ? `语音包 ${voiceGot} 条（${VOICE_PACKS.join('/')} × ${VOICE_ACTIONS.length}）· 版本 ${VOICE_VER}`
+      : `⚠ 语音包 ${voiceGot}/${voiceTotal} 条（缺 ${voiceMissing.join(',')}${voiceGot + 6 < voiceTotal ? ',…' : ''}）→ 客户端逐条回退（默认包→原音效）；跑 node scripts/gen_sound_voice.mjs 补齐`,
   );
   console.log('SERVER_READY');
 });

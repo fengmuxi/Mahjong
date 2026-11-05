@@ -42,21 +42,21 @@ docs/
 | 文档 | 说明 |
 |---|---|
 | [integration/ganzhou.md](integration/ganzhou.md) | 赣州冲关接入改动说明：架构接入点、改动文件清单、配置项、**校验方式（人工验证清单）**、待确认事项 |
-| [integration/wechat-miniprogram.md](integration/wechat-miniprogram.md) | **微信小程序迁移方案**：可行性评估（DOM/Canvas/依赖/域名备案/包体积/资质逐项分析）、原生重写路径、P0–P6 分阶段实施、工作量与风险 |
+| [integration/wechat-minigame.md](integration/wechat-minigame.md) | **微信小游戏端迁移记录**：packages/minigame 的移植决策、平台差异对位实现、功能差异清单、验证记录 |
 
 ## 指引（`docs/guides/`）
 
 | 文档 | 说明 |
 |---|---|
+| [guides/setup-and-run.md](guides/setup-and-run.md) | **环境配置与完整运行示例**：环境要求、安装构建、起服务端、客户端接入、一局完整对局示例、环境变量 / 客户端配置总览、上线清单与排障 |
 | [guides/full-audit-2026-10-16.md](guides/full-audit-2026-10-16.md) | 2026-10-16 全面排查与测试报告：问题清单（严重度分级）、修复方案、复测结果 |
 | [../agent.md](../agent.md) | 改动前必读（在仓库根）：项目是什么、技术栈、目录职责、编码约定、**规则改动铁律**、环境变量、验证清单、常见坑 |
 
-## 微信小程序端（`packages/miniapp/`）
+## 客户端（`packages/minigame` 微信小游戏端）
 
-复用 `packages/shared` 与服务端，是**目前唯一的对局入口**（web 客户端 `packages/client` 已于提交 104bfdc 移除）。
+复用 `packages/shared` 与服务端。web 客户端（`packages/client`，提交 104bfdc）与微信小程序端（`packages/miniapp`）均已移除，**小游戏端是唯一对局入口**。
 
-- **启动与配置说明（先看这个）**：[packages/miniapp/README.md](packages/miniapp/README.md) —— 导入工程、局域网联调、配置项位置、常见报错。
-- **迁移方案与偏离说明**：[integration/wechat-miniprogram.md](integration/wechat-miniprogram.md)。
+- **小游戏端（packages/minigame/）**：单画布 `game.js` 入口，协议与规则零改动；启动与配置见 [packages/minigame/README.md](packages/minigame/README.md)，移植记录见 [integration/wechat-minigame.md](integration/wechat-minigame.md)。
 
 ## 开发辅助脚本（`scripts/`）
 
@@ -64,10 +64,11 @@ docs/
 
 | 脚本 | 作用 |
 |---|---|
-| `mp_build_shared.mjs` | shared 编译入小程序（`npm run build:mp`） |
-| `gen_ui_extra.mjs` | 增量生成 UI 贴图：源 `packages/miniapp/assets/ui/<group>/` → `packages/server/public/ui/`，用完抬 `UI_VER` |
+| `mp_build_shared.mjs` | shared 编译入小游戏（`npm run build:mg`；文件名 `mp_` 为历史命名） |
+| `gen_ui_extra.mjs` | 增量生成 UI 贴图：源 `assets/ui/<group>/` → `packages/server/public/ui/`，用完抬 `UI_VER` |
 | `variant_settle_server.mjs` | 纯 WebSocket 自动打完一局赣州，验服务端结算窗口（需 `MAHJONG_CEREMONY=0` 起服务端） |
-| `verify/*.cjs` | 小程序渲染层几何/布局 harness（`geomcheck` / `handfit` / `meldgap` / `pagelayout` / `shots_art`） |
+| `verify/*.cjs` | 小游戏渲染层几何 / 规则回归（`geomcheck` / `noisetoast` / `gzgerman`） |
+| `mg_geomcheck.cjs` | 小游戏端回归：渲染/命中语义 + 布局几何 + utils 冒烟 |
 
 > 2026-10-24 清理：原先面向 web 客户端（`packages/client`）的截图/交互/背景/聊天脚本
 > （`mobile_*` / `bg_*` / `chat_*` / `invite_flow_e2e` / `orient_diag` / `variant_*_e2e` 等）
@@ -80,8 +81,7 @@ docs/
 ```bash
 npm run typecheck   # tsc --noEmit，必须零报错
 npm run start       # 起服务端，按规则文档人工验证
-npm run build:mp    # 微信小程序：编译 shared → packages/miniapp/miniprogram/lib/shared
-npm run prepare:mp  # 微信小程序：生成牌面资源（降采样后 ≈0.7MB，入主包 miniprogram/tiles）
+npm run build:mg    # 微信小游戏：编译 shared → packages/minigame/game/lib/shared
 ```
 
 各玩法的**人工验证清单**见对应文档：赣州见 [integration/ganzhou.md](integration/ganzhou.md) §6，南昌见 [rules/nanchang.md](rules/nanchang.md) §10。
