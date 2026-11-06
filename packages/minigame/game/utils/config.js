@@ -15,7 +15,7 @@
  */
 
 // const DEFAULT_WSS = 'ws://192.168.31.63:3130/ws';
-const DEFAULT_WSS = 'wss://majiang.dwzynj.top/ws';
+const DEFAULT_WSS = 'wss://majiang.cdn.dwzynj.top/ws';
 
 let override = '';
 

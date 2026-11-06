@@ -151,8 +151,10 @@ function menu(ctx, L, s) {
   });
   railBtn(ctx, eRect, {
     icon: s.voiceEar ? '🔕' : '🔊',
-    on: !s.voiceEar,
-    muted: !!s.voiceEar,
+    // 2026-11-06（用户报「扬声器开着却没声」）：金色 on 仅在**已加入语音且未静音**时点亮；
+    // 未加入语音时这是入会才生效的偏好 → 一律中性灰（对位 lobby chip 的「待生效」态）。
+    on: !!s.voiceOn && !s.voiceEar,
+    muted: !!s.voiceEar || !s.voiceOn,
     pressed: s.pressed === 'voiceEarBtn',
   });
   if (!s.menuOpen) return;

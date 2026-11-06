@@ -161,12 +161,26 @@ class LobbyScene extends Scene {
     }
   }
 
-  /** 扬声器开关（听不听得到别人）：任意状态可切——未加入语音时设偏好（入会生效） */
+  /** 扬声器开关（听不听得到别人）。未在语音时点它=顺带入会（用户定案 B，2026-11-06）：
+   *  按「只听」入会（micMuted:true）——点 🔊 是「想听」，不替你开麦（想说话再点 🎤）；
+   *  会中才真正开关扬声器（关 = 联动闭麦，见 toggleEar）。 */
   onVoiceEar() {
-    // 联动（2026-11-04）：会中关扬声器 = 同步退出语音，toast 告知而非无声退出
-    voice.toggleEar().then((r) => {
-      if (r && r.voiceLeft) toast.push('扬声器已静音，已退出房间语音', 2400);
-    });
+    const st = voice.status();
+    if (st.state === 'joined') {
+      voice.toggleEar().then((r) => {
+        if (r && r.ok && r.earMuted && r.micMuted) toast.push('已关闭扬声器并闭麦（仍在语音中）', 2400);
+        else if (r && r.pending) toast.push('未在语音中：扬声器偏好将在开启语音后生效', 2400);
+      });
+      return;
+    }
+    if (st.state === 'joining') return;
+    // 未在语音：顺带入会（只听、不开麦）；权限被拒先引导去设置（与麦克风钮同流程）
+    const go = () => voice.join(this.code || state.roomCode || '', { micMuted: true }).catch(() => {});
+    if (st.reason === 'micDenied') {
+      voice.openMicSetting().then((granted) => { if (granted) go(); });
+      return;
+    }
+    go();
   }
 
   /** 语音 chip：joined=开/闭麦切换；idle 且权限被拒=先引导去设置；否则（重新）加入 */
@@ -727,20 +741,24 @@ class LobbyScene extends Scene {
       const micRect = { x: headerRight - shareW - 6 - micW, y, w: micW, h: 26 };
       u.btnVoice = micRect;
       let leftX = micRect.x;
-      // 扬声器 chip：**常驻**（2026-11-03 反馈）——未加入语音时也可设偏好（入会时生效）
+      // 扬声器 chip：**常驻**（2026-11-03 反馈）——未加入语音时也可设偏好（入会时生效）。
+      // 2026-11-06（用户报「扬声器开着却没声」）：未加入语音时金色开启态与「正在语音」
+      // 无法区分 → idle 改中性灰 + 文案「待生效」，金色仅在**真的在语音中且未静音**时点亮。
       {
-        const earLabel = this.voiceEar ? '已静音' : '扬声器';
+        const earLive = !!this.voiceOn; // 已加入语音：开=真在响
+        const earLabel = earLive ? (this.voiceEar ? '已静音' : '扬声器') : this.voiceEar ? '已静音' : '待生效';
+        const earGold = earLive && !this.voiceEar;
         const earW = draw.measure(ctx, earLabel, 10) + 30;
         const earRect = { x: micRect.x - 6 - earW, y, w: earW, h: 26 };
         u.btnVoiceEar = earRect;
         const earPressed = this.pressed === 'voiceEar';
-        ctx.fillStyle = earPressed ? 'rgba(255,255,255,0.3)' : this.voiceEar ? 'rgba(255,255,255,0.06)' : 'rgba(230,193,75,0.16)';
+        ctx.fillStyle = earPressed ? 'rgba(255,255,255,0.3)' : earGold ? 'rgba(230,193,75,0.16)' : 'rgba(255,255,255,0.06)';
         draw.roundRect(ctx, earRect.x, earRect.y, earRect.w, earRect.h, 13);
         ctx.fill();
-        ctx.strokeStyle = earPressed ? C.gold : this.voiceEar ? 'rgba(255,255,255,0.1)' : 'rgba(246,227,161,0.4)';
+        ctx.strokeStyle = earPressed ? C.gold : earGold ? 'rgba(246,227,161,0.4)' : 'rgba(255,255,255,0.1)';
         ctx.stroke();
-        draw.icon(ctx, this.voiceEar ? '🔕' : '🔊', earRect.x + 14, earRect.y + 13.5, { size: 11, color: this.voiceEar ? C.muted : C.goldSoft });
-        draw.text(ctx, earLabel, earRect.x + 26, earRect.y + 13.5, { size: 10, color: this.voiceEar ? C.muted : C.goldSoft });
+        draw.icon(ctx, this.voiceEar ? '🔕' : '🔊', earRect.x + 14, earRect.y + 13.5, { size: 11, color: earGold ? C.goldSoft : C.muted });
+        draw.text(ctx, earLabel, earRect.x + 26, earRect.y + 13.5, { size: 10, color: earGold ? C.goldSoft : C.muted });
         leftX = earRect.x;
       }
       // micOn 激活底色 0.16→0.38（2026-11-04，与 app.wxss .voice-chip.on 同修）：
@@ -803,6 +821,10 @@ class LobbyScene extends Scene {
     // 座位：一排 4 张卡
     const seatsH = Math.max(84, Math.min(104, bodyH - 24 - 6 - (this.allReady ? 24 : 0)));
     const seatW = (mainW - 6 * 3) / 4;
+    // 说话环双模式开关：renderLobby 里的 reactive 是那个方法的局部变量，这里取不到
+    // （真机 ReferenceError: reactive is not defined，2026-11-06 用户报障）——按设计注释
+    // 「每帧现取 hasSpeakerData()」在此重取：说话人事件哪天开始触发，呼吸环自动升级。
+    const reactive = voice.hasSpeakerData();
     u.seatRects = [];
     this.seats.forEach((seat, i) => {
       const r = { x: padL + i * (seatW + 6), y, w: seatW, h: seatsH };

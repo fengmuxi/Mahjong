@@ -536,12 +536,26 @@ class GameScene extends Scene {
     go();
   }
 
-  /** 扬声器开关（听不听得到别人）：任意状态可切——未加入语音时设偏好（入会生效） */
+  /** 扬声器开关（听不听得到别人）。未在语音时点它=顺带入会（用户定案 B，2026-11-06）：
+   *  按「只听」入会（micMuted:true）——点 🔊 是「想听」，不替你开麦（想说话再点 🎤）；
+   *  会中才真正开关扬声器（关 = 联动闭麦，见 toggleEar）。 */
   onVoiceEar() {
-    // 联动（2026-11-04）：会中关扬声器 = 同步退出语音，toast 告知而非无声退出
-    voice.toggleEar().then((r) => {
-      if (r && r.voiceLeft) toast.push('扬声器已静音，已退出房间语音', 2400);
-    });
+    const st = voice.status();
+    if (st.state === 'joined') {
+      voice.toggleEar().then((r) => {
+        if (r && r.ok && r.earMuted && r.micMuted) toast.push('已关闭扬声器并闭麦（仍在语音中）', 2400);
+        else if (r && r.pending) toast.push('未在语音中：扬声器偏好将在开启语音后生效', 2400);
+      });
+      return;
+    }
+    if (st.state === 'joining') return;
+    // 未在语音：顺带入会（只听、不开麦）；权限被拒先引导去设置（与麦克风钮同流程）
+    const go = () => voice.join(this.code || state.roomCode || '', { micMuted: true }).catch(() => {});
+    if (st.reason === 'micDenied') {
+      voice.openMicSetting().then((granted) => { if (granted) go(); });
+      return;
+    }
+    go();
   }
 
   /** 服务端 voice 座位映射广播（nav.js 路由）：刷新桌面铭牌的说话光环/闭麦角标 */

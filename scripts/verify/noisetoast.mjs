@@ -14,6 +14,8 @@
  * 否则后台进程会随 bash 命令结束被回收）：
  *   (MAHJONG_CEREMONY=0 PORT=3310 npm run start &) ; sleep 9 ; node scripts/verify/noisetoast.cjs 3310
  */
+import { createRequire } from 'node:module';
+const WebSocket = createRequire(import.meta.url)('ws');
 const WS_URL = process.env.MJ_WS || `ws://127.0.0.1:${Number(process.argv[2] || 3310)}/ws`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

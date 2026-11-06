@@ -23,14 +23,17 @@ const toast = require('./ui/toast.js');
 const app = () => state;
 
 /**
- * 语音自愈（2026-11-03 反馈调整：语音改为**用户可选**，进房不再自动加入，对位 room.js）：
- * 收到 state / game 时 ——
- *   1. 重发一次 voiceId（已在语音中才生效），服务端座位映射不失联；
- *   2. 会话被打断后自动重新入会（2026-11-04 审计 B2：rejoin 此前零调用；幂等，无会可恢复时是空操作）。
- * 开启/关闭语音由场景语音钮显式驱动（lobby/game 场景的 onVoiceTap）。
+ * 语音自动加入与映射同步（2026-11-06 用户定案：**进入房间即自动加入语音**，推翻
+ * 11-03 的「可选开启」方案）：
+ * 收到 state / game 时（房间码已就位）——
+ *   1. autoJoin(房间码)：idle 且语音可用即自动入会。广播频繁到来，autoJoin 幂等：
+ *      joined/joining/语音未开通都是空操作；离房/被踢/解散（leave 复位）后下次进房
+ *      重新自动加入；被打断（来电等）后下一拍广播即自动重入（覆盖原 rejoin 自愈）。
+ *   2. 重发一次 voiceId（已在语音中才生效），服务端座位映射不失联。
+ * 语音内的开关（开闭麦/扬声器）仍由场景语音钮驱动（lobby/game 的 onVoiceTap/onVoiceEar）。
  */
 function syncVoice() {
-  voice.rejoin();
+  voice.autoJoin(state.roomCode);
   voice.announce();
 }
 

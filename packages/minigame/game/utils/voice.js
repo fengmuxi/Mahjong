@@ -66,6 +66,12 @@ let lastError = '';
 /** 最近一次失败的原因码（micDenied / relogin / network / interrupted…），供页面做差异化 UI */
 let lastReason = '';
 let listener = null;
+/**
+ * 自动入会失败后挂起（2026-11-06）：服务端 state/game 广播很频繁，失败后若每条都重试，
+ * 会刷满「joinVoIPChat:fail」日志（开发者工具里 VoIP 必失败，尤其明显）。失败一次即挂起，
+ * leave()/exitVoip() 复位（换房/退出后允许下次自动入会）；用户手动点语音钮走 join() 不受限。
+ */
+let autoJoinBlocked = false;
 
 try {
   earMuted = store.get(KEY_EAR, false) === true;
@@ -339,6 +345,7 @@ function exitVoip() {
       if (state === 'joined') retractId();
       state = 'idle';
       joinedRoom = '';
+      autoJoinBlocked = false; // 换房/退出后允许下次自动入会（2026-11-06）
       othersSpeaking = false;
       lastSpeakers = [];
       memberCount = 0;
@@ -389,6 +396,14 @@ async function join(roomCode, opts) {
   if (!GROUP_RE.test(String(roomCode || ''))) return { ok: false, reason: 'badGroup' };
   if (state === 'joined' && joinedRoom === roomCode) return { ok: true, already: true };
   if (state === 'joining') return { ok: false, reason: 'busy' };
+  // 开发者工具不支持 VoIP（调用即 fail「暂不支持此 API 调试」）：直接给可读结果，
+  // 不调 joinVoIPChat，避免自动入会反复刷 fail 日志（2026-11-06）。
+  if (isDevTools()) {
+    lastReason = 'devtools';
+    lastError = '开发者工具不支持实时语音，请用真机调试';
+    notify();
+    return { ok: false, reason: 'devtools' };
+  }
   if (state === 'joined') await exitVoip();
 
   const seq = ++joinSeq; // 本链世代号：期间发生 leave/exitVoip/再次 join 都会使它过期
@@ -469,6 +484,9 @@ async function join(roomCode, opts) {
     }
     state = 'joined';
     joinedRoom = roomCode;
+    // 入会成功（无论自动还是手动）即清除「失败挂起」：否则手动连上后若再来电打断，
+    // autoJoinBlocked 仍为 true 会抑制「打断后自动重入」，逼用户再点一次（2026-11-06）。
+    autoJoinBlocked = false;
     micMuted = !!wantMuted;
     // 联动约束（2026-11-04）：开语音必须开扬声器 —— 入会时清掉「听不到别人」的
     // 旧偏好并落盘，避免上次手动关过扬声器的人这次进来听不见任何声音。
@@ -516,15 +534,24 @@ function leave() {
 function toggleMic() {
   if (state !== 'joined') return Promise.resolve({ ok: false, reason: 'notJoined' });
   const next = !micMuted;
+  // 联动语义（2026-11-06 用户定案）：**开麦 = 同步开扬声器**；闭麦不动扬声器。
+  // muteConfig 是全量配置（见上注释），两个开关一次下发；开扬声器同时落盘偏好，
+  // 避免「会中开麦、按钮仍显已静音偏好」的错位（KEY_EAR 是下次入会的种子）。
+  // ⚠ 方向（2026-11-06 修复，曾写反）：next=开麦(false) → earNext=false（同步开扬声器）；
+  //   next=闭麦(true) → earNext=earMuted（扬声器维持原状）。写反时「全关闭状态开麦
+  //   扬声器不激活」——用户真机报障即为该形态。
+  const earNext = next ? earMuted : false;
   return new Promise((resolve) => {
     wx.updateVoIPChatMuteConfig({
-      muteConfig: { muteMicrophone: next, muteEarphone: earMuted },
+      muteConfig: { muteMicrophone: next, muteEarphone: earNext },
       success: () => {
         micMuted = next;
-        announceId();
+        earMuted = earNext;
+        store.set(KEY_EAR, earNext);
+        announceId(); // mic/ear 变化 → 重发 voiceId（远端 🔇 角标与指示依赖它）
         notify();
-        console.info('[voice] 麦克风 →', next ? '已静音' : '已打开');
-        resolve({ ok: true, micMuted: next });
+        console.info('[voice] 麦克风 →', next ? '已静音（扬声器维持' + (earMuted ? '关' : '开') + '）' : '已打开（同步开扬声器）');
+        resolve({ ok: true, micMuted: next, earMuted: earNext });
       },
       fail: (res) => {
         console.warn('[voice] 麦克风开关失败：', (res && res.errMsg) || 'unknown');
@@ -536,32 +563,35 @@ function toggleMic() {
 }
 
 /** 开/关扬声器（听不听得到别人）。
- *  · 2026-11-05 解耦：关扬声器**不再自动退出语音** —— 扬声器只影响「自己听不听得到别人」，
- *    与「是否参与语音房」解耦；关掉扬声器仍可留在房内、麦克风状态独立生效（🔇 角标 =
- *    闭麦 且 关扬声器，需远端知道扬声器状态，故随 voiceId 广播 ear 字段）；
- *  · 未加入语音时仅翻转并持久化偏好（下次入会会被强制放开，见 join）；
- *  · 开扬声器只是恢复听感，不影响语音状态。 */
+ *  · 联动语义（2026-11-06 用户定案，取代 11-05 的「解耦」）：**关扬声器 = 同步闭麦**
+ *    （仍在语音房、不退出）；开扬声器不动麦克风（维持各自当前状态）。
+ *    状态空间由此收敛为：开麦+开扬声器（全开）/ 闭麦+开扬声器（只听）/ 闭麦+关扬声器
+ *    （全关）——「开麦+关扬声器」不再可达（这正是用户要的：不想出声的人才关扬声器）；
+ *  · 未加入语音时仅翻转并持久化偏好（pending；入会时 join 会强制放开扬声器）；
+ *  · 🔇 角标（闭麦 且 关扬声器）随 voiceId 广播 mic/ear 字段，远端指示一致。 */
 function toggleEar() {
   const next = !earMuted;
-  const apply = () => {
+  if (state !== 'joined') {
     earMuted = next;
     store.set(KEY_EAR, next);
     notify();
-  };
-  if (state !== 'joined') {
-    apply();
     // pending = 入会时生效：join 链会强制放开扬声器（见 join 注释），本偏好仅作记忆
     return Promise.resolve({ ok: true, earMuted: next, pending: true });
   }
+  // 关扬声器 → 强制闭麦；开扬声器 → 麦克风维持原状
+  const micNext = next ? true : micMuted;
   return new Promise((resolve) => {
     wx.updateVoIPChatMuteConfig({
       // 真机签名（见 toggleMic 注释）：嵌套 muteConfig 对象
-      muteConfig: { muteMicrophone: micMuted, muteEarphone: next },
+      muteConfig: { muteMicrophone: micNext, muteEarphone: next },
       success: () => {
-        apply();
-        announceId(); // 扬声器状态变化 → 重发 voiceId 广播 ear（🔇 角标依赖它）
-        console.info('[voice] 扬声器 →', next ? '已关闭（听不到别人）' : '已打开');
-        resolve({ ok: true, earMuted: next });
+        earMuted = next;
+        micMuted = micNext;
+        store.set(KEY_EAR, next);
+        announceId(); // mic/ear 变化 → 重发 voiceId（🔇 角标依赖它）
+        notify();
+        console.info('[voice] 扬声器 →', next ? '已关闭（同步闭麦，留在语音房）' : '已打开（麦克风维持' + (micMuted ? '静音' : '开麦') + '）');
+        resolve({ ok: true, earMuted: next, micMuted: micNext });
       },
       fail: (res) => {
         console.warn('[voice] 扬声器开关失败：', (res && res.errMsg) || 'unknown');
@@ -573,13 +603,41 @@ function toggleEar() {
   });
 }
 
+/** 是否微信开发者工具：VoIP 在 DevTools 不可用（调用即 fail「暂不支持此 API 调试」）。 */
+function isDevTools() {
+  try {
+    const info = wx.getSystemInfoSync ? wx.getSystemInfoSync() : null;
+    return !!(info && info.platform === 'devtools');
+  } catch (e) {
+    return false;
+  }
+}
+
 /**
- * 会话自愈：idle 但仍记得房间（被打断/服务端重启后）→ 自动重新加入。
- * 对局 WS 重连成功回调、页面 onShow 均可调；不满足条件时是空操作。
+ * 进房自动加入（2026-11-06 用户定案：**进入房间即加入语音，但只开扬声器**）。
+ * nav.js 收到 state/game 广播时调用（房间码已就位）——广播会频繁到来，必须幂等：
+ *   · joined/joining → 空操作（不会重复入会，也不会打断在途 join 链）；
+ *   · 语音未开通（probe 已探得 false）→ 空操作，避免每次进房都弹「语音功能未开启」；
+ *   · 开发者工具不支持 VoIP → 空操作（否则每条广播都触发 joinVoIPChat:fail，刷满控制台）；
+ *   · **失败一次即挂起**（autoJoinBlocked）：广播很密，持续失败时若每条都重试会刷满日志，
+ *     leave/exitVoip 复位；手动点语音钮走 join() 不受限；
+ *   · **麦克风静音入会**（micMuted: true）：未经用户操作绝不打开麦克风——入会后
+ *     处于「只听」态，用户点麦克风 chip（onVoiceTap → toggleMic）才开麦（开麦会
+ *     联动开扬声器，见 toggleMic 注释）；手动「开语音」入口不走本函数，不受影响；
+ *   · 离房/被踢/解散走 leave() 复位状态 → 下次进房重新自动加入；
+ *   · 被打断（来电等）后 state='idle' 但 joinedRoom 保留 → 下一拍 state/game 即自动重入
+ *     （同样静音入会，覆盖原 rejoin 自愈语义）。
  */
-function rejoin() {
-  if (state === 'idle' && joinedRoom) return join(joinedRoom);
-  return Promise.resolve({ ok: false, reason: 'noop' });
+function autoJoin(code) {
+  if (!code) return Promise.resolve({ ok: false, reason: 'noRoom' });
+  if (state !== 'idle') return Promise.resolve({ ok: false, reason: state });
+  if (available() === false) return Promise.resolve({ ok: false, reason: 'disabled' });
+  if (isDevTools()) return Promise.resolve({ ok: false, reason: 'devtools' });
+  if (autoJoinBlocked) return Promise.resolve({ ok: false, reason: 'blocked' });
+  return join(code, { micMuted: true }).then((r) => {
+    if (!r.ok) autoJoinBlocked = true;
+    return r;
+  });
 }
 
 /** 重发 voiceId 上报（幂等；未在语音时空操作），语义见 module.exports 注释 */
@@ -595,7 +653,7 @@ module.exports = {
   hasSpeakerData,
   join,
   leave,
-  rejoin,
+  autoJoin,
   toggleMic,
   toggleEar,
   openMicSetting,

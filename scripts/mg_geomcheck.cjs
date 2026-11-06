@@ -511,6 +511,41 @@ console.log('--- 4) 场景运行时冒烟 ---');
     s.exit();
   });
 
+  // 语音环富状态（2026-11-06 真机报障回归）：voiceMap 有开麦条目 → 座位卡 voiceSpeaking
+  // 为真 → 渲染走「说话环」分支。此分支在空 voiceMap 冒烟下永不进入（node --check 也查不
+  // 出跨作用域漏引），曾在真机抛 `ReferenceError: reactive is not defined`——必须用带
+  // 语音映射的状态连渲多帧压住。定庄面板（drShown）同理富状态化。
+  run('lobby.voice-rich', () => {
+    state.voiceMap = {
+      0: { seat: 0, openid: 'oA', muted: false, ear: false },
+      1: { seat: 1, openid: 'oB', muted: true, ear: true },
+    };
+    state.lastState = {
+      t: 'state', code: 'ABC123', variant: 'ganzhou', you: 0, token: 'tok',
+      players: [
+        { seat: 0, name: '我', isHost: true, ready: true, connected: true },
+        { seat: 1, name: '下家', ready: true, connected: true },
+        { seat: 2, name: '机器人', isBot: true, ready: true, connected: true },
+        { seat: 3, name: '上家', ready: false, connected: true },
+      ],
+      totals: [10, -4, 0, -6], dealer: 0, allReady: true, pendingSwap: { from: 3, to: 0 },
+      dealerRolls: [{ seat: 0, dice: [3, 4], sum: 7 }, { seat: 1, dice: [2, 5], sum: 7 }, { seat: 2, dice: [1, 1], sum: 2 }, { seat: 3, dice: [6, 6], sum: 12 }],
+      dealerDecided: false,
+    };
+    const s = new LobbyScene();
+    s.enter();
+    s.onState(state.lastState);
+    let threw = null;
+    try {
+      for (let f = 0; f < 3; f++) s.render(ctx, layout.compute());
+    } catch (e) { threw = e; }
+    ok(!threw, '语音环+定庄富状态连渲 3 帧抛错：' + (threw && (threw.stack || threw.message).split('\n').slice(0, 2).join(' | ')));
+    const seat = (s.seats || []).find((x) => x.seat === 0);
+    ok(!!seat && seat.voiceSpeaking === true, '开麦座位 voiceSpeaking 未点亮');
+    s.exit();
+    state.voiceMap = {};
+  });
+
   // game：onGame 全相位 + 聊天/表情/事件/错误/结算 + tap
   run('game', () => {
     const s = new GameScene();
